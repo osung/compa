@@ -1,0 +1,9 @@
+# COMPA 매칭 파이프라인 실행 의존성
+numpy
+pandas
+openpyxl
+sentence-transformers
+
+# LLM 백엔드 — 플랫폼에 맞는 것 하나 설치:
+#   Apple Silicon(MLX):  pip install mlx-lm
+#   CUDA(vLLM, Colab 등): pip install "vllm>=0.19.0"

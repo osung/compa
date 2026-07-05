@@ -28,6 +28,8 @@ htmlcov/
 # COMPA 매칭 데이터/모델/출력물 (대용량·비공개, 커밋 금지)
 *.pkl
 *.xlsx
+*.docx
+*.csv
 *.log
 *_ckpt.json
 pro-sroberta/

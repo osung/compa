@@ -14,7 +14,7 @@ SCRATCH = "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2
 def norm(s): return re.sub(r"\s+", "", str(s)).strip()
 
 data = json.load(open(f"{SCRATCH}/pid_fields.json"))
-name2pid = {tuple(k.split("||")): v for k, v in data["name2pid"].items()}
+name2pid = {tuple(k.split("||")): v for k, v in data["name2pid"].items()}  # (기업,수요,과제명)->pid
 FIELDS = data["fields"]
 
 def fmt_date(s):
@@ -81,10 +81,23 @@ def fill(cell, text, label=False):
         tcPr.append(shd)
 
 d = Document(SRC)
-heads = [p for p in d.paragraphs
-         if p.style is not None and p.style.name == "Heading 3" and re.match(r"Top\d", p.text.strip())]
+# 본문 순회로 각 TopN 제목에 (기업명, 수요기술명) 맥락 부여 — 동일 과제명 충돌 방지
+from docx.text.paragraph import Paragraph
+from docx.table import Table
+heads = []; cur_comp = cur_dem = None
+for ch in list(d.element.body):
+    if ch.tag == qn("w:p"):
+        pp = Paragraph(ch, d); tt = pp.text.strip(); ss = pp.style.name if pp.style else ""
+        if ss == "Heading 2" and tt.startswith("[수요"):
+            cur_dem = re.sub(r"^\[수요\s*\d+\]\s*", "", tt).strip(); cur_comp = None
+        elif ss == "Heading 3" and re.match(r"Top\d", tt):
+            heads.append((pp, cur_comp, cur_dem))
+    elif ch.tag == qn("w:tbl"):
+        tbx = Table(ch, d)
+        if tbx.rows[0].cells[0].text.strip() == "기업명" and cur_comp is None:
+            cur_comp = tbx.rows[0].cells[1].text.strip()
 n = miss = 0
-for h in heads:
+for h, comp, dem in heads:
     m = re.match(r"Top\d+\.\s*(.*)", h.text.strip())
     title = re.sub(r"\s*\(출처[:：].*?\)\s*$", "", m.group(1)).strip()
     # 다음 형제에서 수행기관 줄 찾기
@@ -97,7 +110,7 @@ for h in heads:
             if txt.strip().startswith("수행기관:"):
                 org = txt.split("수행기관:", 1)[1].strip(); org_el = el; break
         el = el.getnext(); steps += 1
-    pid = name2pid.get((norm(title), norm(org)))
+    pid = name2pid.get((norm(comp), norm(dem), norm(title)))
     if not pid:
         miss += 1; continue
     tbl = d.add_table(rows=7, cols=2)

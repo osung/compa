@@ -6,22 +6,22 @@ def norm(s): return re.sub(r"\s+", "", str(s)).strip()
 SCRATCH = "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2fb-535b7554627c/scratchpad"
 AP = "/Users/osung/work/apollo"
 
-# --- 매칭 pid + (과제명,수행기관)->pid ---
+# --- 매칭 pid + (기업,수요,과제명)->pid  (수행기관 키는 동일과제명 충돌 유발 → 수요 맥락 포함) ---
 name2pid = {}
 pids = set()
 for f in glob.glob("COMPA_*_최종추천.pkl"):
     if "전체" in f: continue
     for r in pickle.load(open(f, "rb")).to_dict("records"):
         pid = str(r["과제고유번호"]); pids.add(pid)
-        name2pid.setdefault((norm(r["과제명"]), norm(r["과제수행기관"])), pid)
+        name2pid.setdefault((norm(r["기업명"]), norm(r["수요기술명"]), norm(r["과제명"])), pid)
 for k, e in json.load(open("COMPA_통합best.json")).items():
     for t in e.get("top5", []):
         pid = str(t.get("과제고유번호", ""));
         if pid: pids.add(pid)
-        name2pid.setdefault((norm(t["과제명"]), norm(t["수행기관"])), pid)
+        name2pid.setdefault((norm(e["기업명"]), norm(e["수요기술명"]), norm(t["과제명"])), pid)
 for t in json.load(open(f"{SCRATCH}/regen_targets.json"))["regen"]:
     pid = str(t["pid"]); pids.add(pid)
-    name2pid.setdefault((norm(t["과제명"]), norm(t["수행기관"])), pid)
+    name2pid.setdefault((norm(t["기업명"]), norm(t["수요기술명"]), norm(t["과제명"])), pid)
 print("매칭 pid:", len(pids), "| name2pid:", len(name2pid))
 
 # --- dataset_260602: 총연구비/기간/표준분류중/수행기관 ---
@@ -64,7 +64,7 @@ for pid in pids:
         "연구개발단계": g(em, pid, "연구개발단계"),
     }
 
-json.dump({"name2pid": {f"{a}||{b}": p for (a, b), p in name2pid.items()}, "fields": fields},
+json.dump({"name2pid": {f"{a}||{b}||{c}": p for (a, b, c), p in name2pid.items()}, "fields": fields},
           open(f"{SCRATCH}/pid_fields.json", "w"), ensure_ascii=False)
 print("saved pid_fields.json")
 # 커버리지 요약

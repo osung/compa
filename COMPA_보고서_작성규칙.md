@@ -67,8 +67,9 @@
 | 연구개발단계 | `public_RnD_embeddings_pro_260601_with_desc_260708.pkl` | `연구개발단계` | 100% | 기초/응용/개발연구/기타 |
 | 연구수행주체 | `public_RnD_embeddings_pro_260601_with_desc_260708.pkl` | `연구수행주체` | 100% | 대학/중소기업/출연연구소 등 |
 
-- 위 3개 apollo 파일은 이 저장소 밖(`../apollo/`)에 있으며 대용량(각 3~4GB). 매칭 pid만 필터링해 `scratchpad/pid_fields.json`(pid→필드값 + `(과제명,수행기관)→pid` 매핑)으로 캐싱한 뒤 docx 패치에 사용.
+- 위 3개 apollo 파일은 이 저장소 밖(`../apollo/`)에 있으며 대용량(각 3~4GB). 매칭 pid만 필터링해 `scratchpad/pid_fields.json`(pid→필드값 + `(기업,수요기술명,과제명)→pid` 매핑)으로 캐싱한 뒤 docx 패치에 사용.
 - `연구단계`·`연구수행주체`는 기존 매칭용 파일(`project_match_data_260612.pkl` 등)엔 없고, **오늘자(260708) 재생성 임베딩 파일에만** 있음.
+- ⚠️ **pid 매핑 키는 반드시 `(기업, 수요기술명, 과제명)`을 쓸 것.** `(과제명, 수행기관)`만으로 매핑하면 **동일 과제명이 여러 기업에 서로 다른 과제고유번호로 존재**할 때 충돌해 엉뚱한 pid(→틀린 총연구비·기간·분류·단계·주체)가 들어간다. (실제로 이 오류로 정보표 7건이 잘못 채워졌다가 정정됨.) 과제고유번호의 정답 출처는 매칭 산출물(pkl/`통합best.json`)이며, docx 정보표의 pid를 신뢰하지 말 것.
 
 ## 6. 표 서식 규칙 (공통: 고정 레이아웃 `fixed`, 폭 합계 8640 dxa)
 
@@ -104,3 +105,5 @@
 - 서식 신설 시 값을 새로 타이핑하기보다 **정상 항목의 문단/셀 XML을 복제**해 폰트·간격·테두리를 승계.
 - 매 편집 후 문단 수 변화·docx zip 무결성(`zipfile.testzip()`)·해당 항목 육안 확인으로 손실 여부 점검.
 - 편집 스크립트(참고): `_patch_docx.py`(근거 채움+헤더), `_strip_source.py`(출처 제거), `_add_disclaimer.py`(경고문), `_add_pagenum.py`(페이지번호), `_demand_table.py`(수요 정보 표), `_add_year_col.py`(수행년도 열), `_fmt_top5.py`(정렬·2줄), `_justify.py`(양쪽 맞춤), `_proj_meta_prep.py`+`_add_proj_table.py`(과제 정보표), `_del_summary.py`(전체 요약 삭제), 근거 생성 `_regen_run.py`·`_regen_shortreason.py`.
+- 통합 생성: **`build_report.py`** — 원본(`COMPA_최종Top5_보고서_원본.docx`)에 위 규칙을 순서대로 적용해 최종 보고서를 재현(전체 390건). 기본은 기존 근거 재사용(모델 불필요), `--regen` 시 Qwen3.5-35B-A3B로 근거 재생성.
+- 정본 동기화: **`_rebuild_final.py`** — `통합best.json`·담당자 pkl/xlsx의 top5를 보고서 최종 선정으로 교체(식별키 `(기업,수요,과제명)`, pid는 소스에서). **`_fix_projtable_pids.py`** — 과제 정보표 pid 충돌 정정.

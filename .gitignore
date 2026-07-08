@@ -32,6 +32,7 @@ htmlcov/
 *.csv
 *.log
 *.json
+*.pdf
 pro-sroberta/
 company_to_project/data/
 project_to_company/data/

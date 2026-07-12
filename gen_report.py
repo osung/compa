@@ -74,6 +74,15 @@ def load_data():
 _PP = os.path.join(SCRATCH, "pid_patents.json")
 PATENTS = json.load(open(_PP, encoding="utf-8")) if os.path.exists(_PP) else {}
 
+# 배지+간격 실측폭(pt) — 배지 뒤 제목의 내어쓰기(hanging indent)를 정확히 맞추기 위함
+_NB_FONT = os.path.join(SCRATCH, "fonts", "NotoSansKR-Bold.ttf")
+def _text_w(s, size):
+    try:
+        from PIL import ImageFont
+        return ImageFont.truetype(_NB_FONT, int(round(size))).getlength(s)  # 72dpi: px≈pt
+    except Exception:
+        return len(s) * size * 0.62   # 폰트 없으면 근사
+
 def extract_period(desc):
     m = re.search(r'(\d{4})년\s*\d{1,2}월\s*\d{1,2}일에 시작.*?(\d{4})년\s*\d{1,2}월\s*\d{1,2}일에 종료', desc)
     if m:
@@ -519,7 +528,8 @@ def build_demand(doc, k, dm, pidf):
     h2 = doc.add_heading(level=2)
     h2.paragraph_format.page_break_before = True
     h2.paragraph_format.space_before = Pt(0); h2.paragraph_format.space_after = Pt(5)
-    h2.paragraph_format.left_indent = Pt(60); h2.paragraph_format.first_line_indent = Pt(-60)  # 배지 내어쓰기
+    _off = _text_w(f" 수요 {k} ", 12) + _text_w("  ", 12)   # 배지(12)+간격(12) 실측폭
+    h2.paragraph_format.left_indent = Pt(_off); h2.paragraph_format.first_line_indent = Pt(-_off)  # 배지 내어쓰기
     # 텍스트는 "[수요 N] 제목" 유지, 접두 배지만 색/음영
     badge = h2.add_run(f" 수요 {k} ")
     style_run(badge, 12, bold=True, color="FFFFFF"); run_shade(badge, ACCENT)
@@ -573,7 +583,8 @@ def build_top_detail(doc, tp, pidf):
     h3 = doc.add_heading(level=3)
     h3.paragraph_format.page_break_before = True
     h3.paragraph_format.space_before = Pt(0); h3.paragraph_format.space_after = Pt(3)  # 제목↔정보표 좁힘
-    h3.paragraph_format.left_indent = Pt(46); h3.paragraph_format.first_line_indent = Pt(-46)  # 배지 내어쓰기
+    _off = _text_w(f" TOP {tp['rank']} ", 11) + _text_w("  ", 12)  # 배지(11)+간격(12) 실측폭
+    h3.paragraph_format.left_indent = Pt(_off); h3.paragraph_format.first_line_indent = Pt(-_off)  # 배지 내어쓰기
     pill = h3.add_run(f" TOP {tp['rank']} ")
     style_run(pill, 11, bold=True, color="FFFFFF"); run_shade(pill, NAVY)
     style_run(h3.add_run("  "), 12)

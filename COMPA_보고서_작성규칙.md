@@ -7,6 +7,110 @@
 
 ---
 
+# ▶ 실행 가이드 (자기완결 런북)
+
+**다른 컴퓨터에서 이 저장소(스크립트) + 아래 외부 데이터/모델을 준비하면, Qwen LLM 매칭 → docx·PDF 보고서까지 전부 재현된다.** (파이프라인 세부 규칙은 §0~§10.)
+
+전체 흐름: `진성수요 xlsx` → **①매칭(Qwen 35B)** → `COMPA_통합best.json`(정본) → **②입력 캐시** → **③보고서(docx·PDF)**.
+
+## A. 환경 설정
+
+- **HW/OS**: Apple Silicon(권장, MLX 백엔드) 또는 CUDA GPU(vLLM). RAM ≥ 32GB(피크 ~30GB), 디스크 ~15GB(데이터+모델).
+- **Python** 3.10+.
+- **패키지**: `pip install -r requirements.txt` (numpy·pandas·openpyxl·sentence-transformers·scikit-learn + python-docx·reportlab·fonttools·pillow·pypdf) **그리고 LLM 백엔드 하나**: Apple `pip install mlx-lm` / CUDA `pip install "vllm>=0.19.0"`.
+- **Qwen LLM**: 기본 `mlx-community/Qwen3.5-35B-A3B-4bit`(MLX). 첫 실행 시 HuggingFace에서 자동 다운로드(네트워크 필요, 캐시 `~/.cache/huggingface`). CUDA는 `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`(vLLM). 교체는 환경변수 `MV_MLX_MODEL`/`MV_VLLM_MODEL`.
+- **임베딩 모델**: 저장소의 `pro-sroberta/` 디렉토리(SentenceTransformers). 재랭커 `BAAI/bge-reranker-v2-m3`는 첫 사용 시 자동 다운로드.
+- **스크래치 경로**(임시 캐시·폰트): `export COMPA_SCRATCH="$PWD/_scratch"; mkdir -p "$COMPA_SCRATCH/fonts"`.
+- **apollo 데이터 경로**: `export COMPA_APOLLO_DIR=/경로/apollo` (아래 B의 apollo 파일 위치).
+- **폰트(보고서 디자인, Noto Sans/Serif KR)** — VF 내려받아 static Regular/Bold 인스턴싱:
+  ```bash
+  cd "$COMPA_SCRATCH/fonts"
+  curl -L -o NotoSansKR-VF.ttf  "https://github.com/google/fonts/raw/main/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf"
+  curl -L -o NotoSerifKR-VF.ttf "https://github.com/google/fonts/raw/main/ofl/notoserifkr/NotoSerifKR%5Bwght%5D.ttf"
+  python - <<'PY'
+  from fontTools.varLib.instancer import instantiateVariableFont
+  from fontTools.ttLib import TTFont
+  for vf, base in [("NotoSansKR-VF.ttf","NotoSansKR"), ("NotoSerifKR-VF.ttf","NotoSerifKR")]:
+      for w, n in {400:"Regular", 700:"Bold"}.items():
+          f = TTFont(vf); instantiateVariableFont(f, {"wght": w}, inplace=True); f.save(f"{base}-{n}.ttf")
+  PY
+  ```
+  (docx를 Word에서 열 땐 시스템에 Noto Sans/Serif KR 설치 권장. LibreOffice는 검증용, 선택.)
+
+## B. 필요 데이터 파일 (외부·대용량, git 제외 — 별도 확보 필요)
+
+**매칭 엔진용**(저장소 루트 = `COMPA_DATA_DIR`, 기본 현재 디렉토리):
+
+| 파일 | 내용 |
+|---|---|
+| `COMPA_진성수요_원본.xlsx` | 입력 수요 78건(담당자·수요기술명·내용·사양·6T 분야) |
+| `pro-sroberta/` | 임베딩 모델 디렉토리 |
+| `public_RnD_embeddings_pro_with_desc_260708.pkl` | 과제 임베딩+과제명+제출년도+키워드+유망성 + **연구수행주체·연구개발단계**(필터·정보표) |
+| `company_embeddings_pro_260514_with_desc.pkl` | 기업 설명문(상세근거용) |
+| `project_match_data_260612.pkl` | 과제 메타(수행기관·논문/특허·상위비율) |
+
+**보고서 상세필드·특허·연구책임자용**(`$COMPA_APOLLO_DIR`):
+
+| 파일 | 내용 |
+|---|---|
+| `df_project_dataset_260602.pkl` | 총연구비·연구시작/종료일·표준분류(중)·수행기관 |
+| `df_project_all_bizno_260310.pkl` | 과학기술표준분류(대) |
+| `public_RnD_PI_260610.pkl` | 연구책임자명·국가연구자번호 |
+| `df_pr_patent_260710_detail.pkl` | 특허 출원/등록 상세 |
+| `APOLLO 로고.png` | 로고(저장소 루트) |
+
+## C. 스크립트 (저장소 포함)
+
+`compa_match.py`(매칭 엔진: 키워드추출·합집합검색·재랭킹·35B 채점·근거생성), `rematch_filtered.py`(필터 재매칭 드라이버), `_build_full_inputs.py`·`_patent_prep.py`(보고서 입력 캐시 생성), `gen_report.py`(docx), `gen_report_pdf.py`(PDF), `_rebuild_final.py`·`_fix_projtable_pids.py`(정본 동기화/정정). 경로는 모두 `COMPA_SCRATCH`·`COMPA_APOLLO_DIR` 환경변수를 따른다.
+
+## D. 실행 절차 (end-to-end)
+
+**① 매칭 (필터 재매칭)** — 78수요를 배치로. 수요 1건당 ~5–20분(35B), 항목별 체크포인트로 중단·재개 가능:
+```bash
+python rematch_filtered.py --start 1  --n 10 --tag 필터10
+python rematch_filtered.py --start 11 --n 10 --tag 필터11_20
+python rematch_filtered.py --start 21 --n 58 --tag 필터21_78
+```
+(필터 조건 = §0. `rematch_filtered.py` 상단 `ALLOW`(연구수행주체)·`YEAR_MIN`(2020) 확인. 태그 3개는 `_build_full_inputs.py`의 `BATCHES` 목록과 일치해야 함.)
+
+**② 보고서 입력 통합**:
+```bash
+python _build_full_inputs.py   # → COMPA_통합best.json(정본) + $COMPA_SCRATCH/{pid_fields,demand_field}.json
+python _patent_prep.py         # → $COMPA_SCRATCH/pid_patents.json
+```
+
+**③ 로고 crop**(PDF가 참조하는 `apollo_top.png`; docx를 먼저 생성하면 `make_top_logo()`가 자동 생성하므로 생략 가능):
+```bash
+python - <<'PY'
+import os, numpy as np
+from PIL import Image
+S = os.environ["COMPA_SCRATCH"]; im = Image.open("APOLLO 로고.png").convert("RGBA"); a = np.array(im)[:, :, 3]
+rows = np.where((a > 16).sum(1) > 5)[0]; sp = np.where(np.diff(rows) > 20)[0]
+band = rows[:sp[0] + 1] if len(sp) else rows; y0, y1 = int(band[0]), int(band[-1])
+cols = np.where((a[y0:y1 + 1] > 16).sum(0) > 2)[0]; x0, x1 = int(cols[0]), int(cols[-1]); p = 12
+im.crop((max(0, x0 - p), max(0, y0 - p), min(im.width, x1 + p), min(im.height, y1 + p))).save(f"{S}/apollo_top.png")
+PY
+```
+
+**④ 보고서 생성**:
+```bash
+COMPA_REPORT_OUT=COMPA_최종보고서.docx python gen_report.py       # docx
+COMPA_PDF_OUT=COMPA_최종보고서.pdf     python gen_report_pdf.py   # PDF(배포용)
+```
+
+**⑤ (선택) 검증** — LibreOffice로 docx→PDF 변환 후 페이지 렌더 확인(§9-7):
+```bash
+soffice --headless --convert-to pdf --outdir "$COMPA_SCRATCH" COMPA_최종보고서.docx
+```
+
+## E. 참고
+
+- **보고서만 재생성**: 이미 `COMPA_통합best.json`이 있으면 ①(매칭)을 건너뛰고 ②~④만 실행하면 된다(단, apollo 데이터·폰트·로고는 필요).
+- 대용량 데이터·모델·산출물(pkl/xlsx/docx/pdf/폰트)은 **git 제외**. 다른 컴퓨터에선 B의 데이터를 별도로 확보해야 매칭이 재현된다.
+- 요청 모델이 Qwen3.6-35B-A3B였으나 미보유/네트워크 이슈로 본 세션은 3.5로 실행. 모델 교체는 `MV_MLX_MODEL`.
+
+---
+
 ## 0. 매칭 대상 필터 (재매칭 시 필수)
 
 재매칭(`rematch_filtered.py`)은 후보 코퍼스를 아래 조건으로 걸러 35B가 필터 통과 과제만 채점·선정하게 한다.

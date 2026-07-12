@@ -9,8 +9,9 @@ import json, os, shutil, glob
 import pandas as pd
 import compa_match as cm
 
-SCRATCH = "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2fb-535b7554627c/scratchpad"
-AP = "/Users/osung/work/apollo"
+SCRATCH = os.environ.get("COMPA_SCRATCH", "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2fb-535b7554627c/scratchpad")
+os.makedirs(SCRATCH, exist_ok=True)
+AP = os.environ.get("COMPA_APOLLO_DIR", "/Users/osung/work/apollo")
 BATCHES = ["COMPA_필터10_최종추천.pkl", "COMPA_필터11_20_최종추천.pkl", "COMPA_필터21_78_최종추천.pkl"]
 
 # --- 1) XLSX 수요 메타 + 6T ---

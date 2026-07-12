@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """매칭 과제(pid)들의 7개 상세 필드를 apollo 3파일에서 추출 → pid_fields.json.
 또 (과제명,수행기관)->pid 매핑도 저장."""
-import pandas as pd, pickle, json, glob, re
+import pandas as pd, pickle, json, glob, re, os
 def norm(s): return re.sub(r"\s+", "", str(s)).strip()
-SCRATCH = "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2fb-535b7554627c/scratchpad"
-AP = "/Users/osung/work/apollo"
+SCRATCH = os.environ.get("COMPA_SCRATCH", "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2fb-535b7554627c/scratchpad")
+os.makedirs(SCRATCH, exist_ok=True)
+AP = os.environ.get("COMPA_APOLLO_DIR", "/Users/osung/work/apollo")
 
 # --- 매칭 pid + (기업,수요,과제명)->pid  (수행기관 키는 동일과제명 충돌 유발 → 수요 맥락 포함) ---
 name2pid = {}

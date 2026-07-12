@@ -3,10 +3,11 @@
 - 다년도 과제: 해당 pid 의 모든 연도 레코드 포함(데이터가 pid 로 묶여 있어 전 연도 자동 포함).
 - 출원/등록 분리 레코드는 (과제, 출원번호)로 병합해 하나의 특허로: 등록정보 우선, 출원정보 병기.
 - 정렬: 등록 먼저(등록일 desc), 그다음 출원-only(출원일 desc)."""
-import json, pandas as pd
+import json, os, pandas as pd
 
-SCRATCH = "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2fb-535b7554627c/scratchpad"
-PF = "/Users/osung/work/apollo/df_pr_patent_260710_detail.pkl"
+SCRATCH = os.environ.get("COMPA_SCRATCH", "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2fb-535b7554627c/scratchpad")
+os.makedirs(SCRATCH, exist_ok=True)
+PF = os.path.join(os.environ.get("COMPA_APOLLO_DIR", "/Users/osung/work/apollo"), "df_pr_patent_260710_detail.pkl")
 
 def s(v):
     v = str(v).strip()

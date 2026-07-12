@@ -5,6 +5,13 @@ openpyxl
 sentence-transformers          # 임베딩(pro-sroberta) + 크로스인코더 재랭커
 scikit-learn                   # BM25(어휘 검색) 인덱스
 
+# 보고서(docx·PDF) 생성 의존성
+python-docx                    # docx 생성(gen_report.py)
+reportlab                      # PDF 직접 생성(gen_report_pdf.py)
+fonttools                      # Noto 가변폰트 → static Regular/Bold 인스턴싱
+pillow                         # 로고 crop + docx 배지 폭 측정(ImageFont)
+pypdf                          # 산출 PDF 페이지 검증(선택)
+
 # LLM 백엔드 — 플랫폼에 맞는 것 하나 설치:
 #   Apple Silicon(MLX):  pip install mlx-lm
 #   CUDA(vLLM, Colab 등): pip install "vllm>=0.19.0"

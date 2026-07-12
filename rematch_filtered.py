@@ -10,7 +10,7 @@ import numpy as np, pandas as pd
 from sentence_transformers import SentenceTransformer
 import compa_match as cm
 
-AP = "/Users/osung/work/apollo"
+AP = os.environ.get("COMPA_APOLLO_DIR", "/Users/osung/work/apollo")
 EMB_FILE = f"{AP}/public_RnD_embeddings_pro_with_desc_260708.pkl"
 ALLOW = {"대학", "출연연구소", "국공립연구소", "정부부처"}
 YEAR_MIN = 2020            # 제출년도 최근 5년(2020~2024)

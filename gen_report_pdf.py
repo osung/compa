@@ -102,7 +102,15 @@ class Doc(BaseDocTemplate):
         fr = Frame(LM, BM, CW, PAGE_H - TM - BM, id="n", topPadding=0, bottomPadding=0)
         self.addPageTemplates([PageTemplate(id="cover", frames=[fr], onPage=self._cover),
                                PageTemplate(id="body", frames=[fr], onPage=self._body)])
+        self.body_start = None; self.toc_pages = {}; self.chap_pages = {}  # 목차 페이지 산출용
     def afterFlowable(self, flowable):
+        cno = getattr(flowable, "_chapter_no", None)
+        if cno is not None:
+            if self.body_start is None: self.body_start = self.page
+            self.chap_pages.setdefault(cno, self.page)
+        k = getattr(flowable, "_toc_k", None)
+        if k is not None:
+            self.toc_pages.setdefault(k, self.page)
         # 상세(TOP) 페이지에만 수요기술명 헤더를 그림 → 새 수요 시작(intro) 페이지엔 미표시
         hdr = getattr(flowable, "_demand_hdr", None)
         if hdr is not None:
@@ -138,6 +146,8 @@ class Doc(BaseDocTemplate):
 
 COVER_PAGES = 2
 story = []
+PAGE_MAP = {}    # 수요번호 → 표시 페이지(목차용)
+CHAP_PAGE = {}   # 장 번호 → 표시 페이지(목차용)
 
 def base_grid(extra=None, fontsize=9):
     s = [("GRID", (0, 0), (-1, -1), 0.5, HAIR), ("FONT", (0, 0), (-1, -1), "Sans", fontsize),
@@ -199,18 +209,28 @@ def intro_toc(by_field):
                                f'<font name="Serif" color="#1B2430">{esc(ln)}</font>',
                                ParagraphStyle("b", fontSize=10, leading=15, leftIndent=14, spaceAfter=3)))
     story.append(section_label("목차", before=16))
-    rows = []
+    def pg(v): return str(v) if v else "··"
+    rows, sty = [], [("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LINEBELOW", (0, 0), (-1, -1), 0.3, HAIR),
+                     ("TOPPADDING", (0, 0), (-1, -1), 4.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5)]
+    ci = 0
     for i, f in enumerate([f for f in FIELD_ORDER if by_field[f]], 1):
-        ks = by_field[f]; rng = f"수요 {ks[0]}–{ks[-1]}" if len(ks) > 1 else f"수요 {ks[0]}"
-        rows.append([P(f"제 {i} 장", 10.5, ACCENT, bold=True), P(FIELD_TITLE[f], 11.5, NAVY, bold=True),
-                     P(f"{rng} · {len(ks)}건", 9.5, MUTED, TA_RIGHT)])
-    story.append(mktable(rows, [20 * mm, CW - 62 * mm, 42 * mm],
-                 [("LINEBELOW", (0, 0), (-1, -1), 0.4, HAIR), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                  ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
+        ks = by_field[f]
+        rows.append([P(f"제 {i} 장", 10, colors.white, bold=True),
+                     P(f"{FIELD_TITLE[f]}  ({len(ks)}건)", 11, colors.white, bold=True),
+                     P(pg(CHAP_PAGE.get(i)), 10, colors.white, TA_RIGHT, bold=True)])
+        sty.append(("BACKGROUND", (0, ci), (-1, ci), HEADBG)); ci += 1
+        for k in ks:
+            rows.append([P(f"수요 {k}", 9, ACCENT, TA_CENTER, bold=True),
+                         P(demands[k]["수요기술명"], 9, INK, leading=11.5),
+                         P(pg(PAGE_MAP.get(k)), 9, MUTED, TA_RIGHT)])
+            ci += 1
+    story.append(mktable(rows, [17 * mm, CW - 45 * mm, 12 * mm], sty))
     story.append(PageBreak())
 
 def chapter(no, f, ks):
-    story.append(P(f"제{no}장  {FIELD_TITLE[f]}", 21, NAVY, bold=True, space=1))
+    ctitle = P(f"제{no}장  {FIELD_TITLE[f]}", 21, NAVY, bold=True, space=1)
+    ctitle._chapter_no = no                      # 목차 페이지 산출 마커
+    story.append(ctitle)
     story.append(mktable([[P(FIELD_EN[f], 9, ACCENT, bold=True)]], [CW],
                  [("LINEBELOW", (0, 0), (-1, -1), 1.2, NAVY), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                   ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
@@ -233,8 +253,10 @@ def demand_block(k, dm):
     badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="#0E7C86"> 수요 {esc(k)} </font>'
              f'  <font name="Sans-B" color="#14315C" size="14">{esc(dm["수요기술명"])}</font>')
     off = pdfmetrics.stringWidth(f" 수요 {k} ", "Sans-B", 14) + pdfmetrics.stringWidth("  ", "Sans-B", 14)
-    story.append(Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20,
-                           spaceAfter=5, leftIndent=off, firstLineIndent=-off)))  # 배지+간격 실측폭 내어쓰기
+    h2p = Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20,
+                    spaceAfter=5, leftIndent=off, firstLineIndent=-off))  # 배지+간격 실측폭 내어쓰기
+    h2p._toc_k = k                                # 목차 페이지 산출 마커
+    story.append(h2p)
     story.append(mktable([[""]], [CW], [("LINEBELOW", (0, 0), (-1, -1), 0.6, HAIR)]))
     story.append(Spacer(1, 4))
     rows = [[P("기업명", 9.5, NAVY, TA_CENTER, bold=True), P(dm.get("기업명", ""), 9)]]
@@ -331,14 +353,26 @@ by_field = {f: [] for f in FIELD_ORDER}
 for k in sorted(demands, key=int):
     by_field.setdefault(field6t.get(k, "융합"), []).append(k)
 
-story.append(NextPageTemplate("cover"))
-cover()
-intro_toc(by_field)
-no = 0
-for f in FIELD_ORDER:
-    if not by_field[f]: continue
-    no += 1
-    chapter(no, f, by_field[f])
+def assemble():
+    story.clear()
+    story.append(NextPageTemplate("cover"))
+    cover()
+    intro_toc(by_field)
+    no = 0
+    for f in FIELD_ORDER:
+        if not by_field[f]: continue
+        no += 1
+        chapter(no, f, by_field[f])
+    return list(story)
 
-Doc(OUT).build(story)
-print("saved:", OUT)
+# --- pass 1: 페이지 번호 산출(목차는 placeholder) ---
+import io
+d1 = Doc(io.BytesIO()); d1.build(assemble())
+bs = d1.body_start or (COVER_PAGES + 1)
+PAGE_MAP.update({k: v - bs + 1 for k, v in d1.toc_pages.items()})
+CHAP_PAGE.update({c: v - bs + 1 for c, v in d1.chap_pages.items()})
+COVER_PAGES = bs - 1                              # 본문 페이지번호(footer) 기준 보정
+
+# --- pass 2: 실제 페이지 번호로 목차 채워 최종 출력 ---
+Doc(OUT).build(assemble())
+print("saved:", OUT, "| 목차 수요", len(PAGE_MAP), "장", len(CHAP_PAGE))

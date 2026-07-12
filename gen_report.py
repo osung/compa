@@ -481,15 +481,25 @@ def build_intro_toc(doc, dbf, n_dem, n_rec, n_proj, n_fields):
         style_run(q.add_run(ln), 10, color=INK, family=SERIF)
 
     section_label(doc, "목차", before=20)
-    W = 9550  # 우측 탭 위치(dxa)
-    for i, f in enumerate([f for f in FIELD_ORDER if dbf[f]], 1):
-        ks = dbf[f]
-        rng = f"수요 {ks[0]}–{ks[-1]}" if len(ks) > 1 else f"수요 {ks[0]}"
-        p = doc.add_paragraph(); p.paragraph_format.space_after = Pt(6)
-        p.paragraph_format.tab_stops.add_tab_stop(Twips(W), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS)
-        style_run(p.add_run(f"제 {i} 장"), 10.5, bold=True, color=ACCENT)
-        style_run(p.add_run(f"   {FIELD_TITLE[f]}"), 11, bold=True, color=NAVY)
-        style_run(p.add_run(f"\t{rng} · {len(ks)}건"), 9.5, color=MUTED)
+    para(doc, "분야(장)와 수요기술별 시작 페이지. (Word에서 열면 자동 갱신되며, 갱신 안 되면 목차 위에서 F9)",
+         8.5, color=MUTED, after=6)
+    # 장(Heading 1)·수요(Heading 2)를 포함하는 Word 목차 필드 — 페이지는 Word/LibreOffice 가 계산
+    p = doc.add_paragraph()
+    r = p.add_run()
+    b = OxmlElement("w:fldChar"); b.set(qn("w:fldCharType"), "begin"); r._r.append(b)
+    it = OxmlElement("w:instrText"); it.set(qn("xml:space"), "preserve")
+    it.text = 'TOC \\o "1-2" \\h \\z \\u'; r._r.append(it)
+    sep = OxmlElement("w:fldChar"); sep.set(qn("w:fldCharType"), "separate"); r._r.append(sep)
+    ph = p.add_run("목차를 표시하려면 문서를 열고 F9로 필드를 업데이트하세요.")
+    style_run(ph, 9.5, color=MUTED)
+    e = p.add_run(); ec = OxmlElement("w:fldChar"); ec.set(qn("w:fldCharType"), "end"); e._r.append(ec)
+    # 문서 열 때 필드(목차) 자동 갱신
+    try:
+        st = doc.settings.element
+        if st.find(qn("w:updateFields")) is None:
+            uf = OxmlElement("w:updateFields"); uf.set(qn("w:val"), "true"); st.append(uf)
+    except Exception:
+        pass
 
 # ---- 장(章) 오프너 ----------------------------------------------------------
 def build_chapter(doc, no, f, ks, demands, pidf, first=False):

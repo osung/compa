@@ -594,8 +594,11 @@ def build_top_detail(doc, tp, pidf):
         style_run(p.add_run(title.strip("[]") + "  "), D_FONT, bold=True, color=BLUE)
         style_run(p.add_run(body), D_FONT, color=INK, family=SERIF)
 
-    # ---- 특허 실적(있는 경우): 등록 우선, 출원정보 병기. 다년도 전 연도 포함 ----
+    # ---- 특허 실적: 등록 우선, 출원정보 병기. 다년도 전 연도 포함. 없으면 '없음' 표기 ----
     pats = PATENTS.get(pid, [])
+    if not pats:
+        para(doc, "특허 실적", D_FONT + 1, bold=True, color=NAVY, before=6, after=3)
+        para(doc, "특허 실적 없음", D_FONT, color=MUTED)
     if pats:
         para(doc, f"특허 실적  ({len(pats)}건)", D_FONT + 1, bold=True, color=NAVY, before=6, after=3)
         heads = ("구분", "특허명", "출원·등록기관", "국가", "출원일", "출원번호", "등록일", "등록번호")

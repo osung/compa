@@ -273,7 +273,7 @@ def top_detail(tp):
                                f'<font name="Serif" color="#1B2430">{esc(body)}</font>',
                                ParagraphStyle("sec", fontSize=9, leading=13.5, alignment=TA_JUSTIFY, spaceAfter=4)))
     story.append(KeepTogether(block))
-    # ---- 특허 실적(있는 경우): 등록 우선, 출원정보 병기. 다년도 전 연도 포함 ----
+    # ---- 특허 실적: 등록 우선, 출원정보 병기. 다년도 전 연도 포함. 없으면 '없음' 표기 ----
     pats = patents.get(pid, [])
     if pats:
         story.append(section_label(f"특허 실적  ({len(pats)}건)", before=6, after=3, size=10.5))
@@ -294,6 +294,10 @@ def top_detail(tp):
         st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)], fontsize=8)
         for i in range(2, len(rows), 2): st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
         story.append(mktable(rows, [9 * mm, 44 * mm, 26 * mm, 8 * mm, 16 * mm, 26 * mm, 16 * mm, 25 * mm], st))
+    else:
+        story.append(section_label("특허 실적", before=6, after=3, size=10.5))
+        story.append(mktable([[P("특허 실적 없음", 8.5, MUTED, TA_CENTER)]], [CW],
+                     base_grid([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFBFD"))], fontsize=8.5)))
     story.append(PageBreak())
 
 # ---- 조립 ----

@@ -19,7 +19,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRATCH = "/tmp/claude-1000/-mnt-d-work-compa/4bf38e1a-f59e-4115-8fee-5bed82365170/scratchpad"
+SCRATCH = os.environ.get("COMPA_SCRATCH", "/tmp/claude-1000/-mnt-d-work-compa/4bf38e1a-f59e-4115-8fee-5bed82365170/scratchpad")
 OUT_BASE = "COMPA_매칭데이_기술수요조사_최종매칭_보고서"
 PUBLISH_DATE = "2026. 7. 8."
 
@@ -30,7 +30,7 @@ def next_out_path():
     n = (max(vers) + 1) if vers else 1
     return os.path.join(HERE, f"{OUT_BASE}_v{n}.docx")
 
-OUT = next_out_path()
+OUT = os.environ.get("COMPA_REPORT_OUT", next_out_path())
 
 # ---- 디자인 토큰 ------------------------------------------------------------
 SANS = "Noto Sans KR"     # 표제·표·라벨 (사용자 Windows에 설치됨)
@@ -66,7 +66,7 @@ DISCLAIMER = ("본 보고서는 APOLLO 인공지능을 이용해서 생성한 �
 
 # ---- 데이터 헬퍼 ------------------------------------------------------------
 def load_data():
-    demands = json.load(open(os.path.join(HERE, "COMPA_통합best.json"), encoding="utf-8"))
+    demands = json.load(open(os.environ.get("COMPA_REPORT_JSON", os.path.join(HERE, "COMPA_통합best.json")), encoding="utf-8"))
     fields = json.load(open(os.path.join(SCRATCH, "demand_field.json"), encoding="utf-8"))
     pidf = json.load(open(os.path.join(SCRATCH, "pid_fields.json"), encoding="utf-8"))
     return demands, fields, pidf
@@ -193,7 +193,10 @@ def table_cellmar(table, top=46, bottom=46, left=100, right=100):
     tblPr.append(cm)
 
 def table_fixed(table, widths):
+    table.autofit = False; table.allow_autofit = False
     tblPr = table._tbl.tblPr
+    for tag in ("w:tblW", "w:tblLayout"):          # 기존(autofit w=0) 요소 제거 후 재설정(중복 방지)
+        for el in tblPr.findall(qn(tag)): tblPr.remove(el)
     tblW = OxmlElement("w:tblW"); tblW.set(qn("w:w"), str(sum(widths))); tblW.set(qn("w:type"), "dxa")
     tblPr.append(tblW)
     layout = OxmlElement("w:tblLayout"); layout.set(qn("w:type"), "fixed"); tblPr.append(layout)
@@ -299,7 +302,7 @@ def build():
     doc.sections[0].footer.is_linked_to_previous = False
     setup_cover_header(doc.sections[0])   # 표지·목차에도 상단 로고(매 페이지)
 
-    for i, f in enumerate(FIELD_ORDER):
+    for i, f in enumerate([f for f in FIELD_ORDER if demand_by_field[f]]):
         build_chapter(doc, i + 1, f, demand_by_field[f], demands, pidf, first=(i == 0))
 
     doc.save(OUT)
@@ -443,7 +446,7 @@ def build_intro_toc(doc, dbf, n_dem, n_rec, n_proj, n_fields):
 
     section_label(doc, "목차", before=20)
     W = 9550  # 우측 탭 위치(dxa)
-    for i, f in enumerate(FIELD_ORDER, 1):
+    for i, f in enumerate([f for f in FIELD_ORDER if dbf[f]], 1):
         ks = dbf[f]
         rng = f"수요 {ks[0]}–{ks[-1]}" if len(ks) > 1 else f"수요 {ks[0]}"
         p = doc.add_paragraph(); p.paragraph_format.space_after = Pt(6)
@@ -554,16 +557,24 @@ def build_top_detail(doc, tp, pidf):
     if (cls := extract_class(tp.get("과제설명문", ""))): info.append(("과학기술표준분류(중)", cls))
     if extra.get("연구개발단계"): info.append(("연구개발단계", extra["연구개발단계"]))
     info.append(("과제수행기관", tp.get("수행기관", "")))
+    if extra.get("연구책임자명"): info.append(("연구책임자", extra["연구책임자명"]))
+    if extra.get("국가연구자번호"): info.append(("국가연구자번호", extra["국가연구자번호"]))
     if extra.get("연구수행주체"): info.append(("연구수행주체", extra["연구수행주체"]))
 
-    t = doc.add_table(rows=0, cols=2)
+    # 4열(라벨|값|라벨|값)로 묶어 행 수를 절반으로 축소
+    t = doc.add_table(rows=0, cols=4)
     table_grid(t, HAIR, 4, "all"); table_cellmar(t, 34, 34, 110, 110)
-    for label, val in info:
+    for i in range(0, len(info), 2):
+        pairs = [info[i]] + ([info[i + 1]] if i + 1 < len(info) else [("", "")])
         cells = t.add_row().cells
-        shade_cell(cells[0], LABEL_BG); cell_vcenter(cells[0])
-        fill_cell(cells[0], label, D_FONT, bold=True, color=NAVY); cell_indent(cells[0], 150)
-        fill_cell(cells[1], str(val), D_FONT); cell_vcenter(cells[1])
-    table_fixed(t, [1900, 4300])
+        for j, (label, val) in enumerate(pairs):
+            lc, vc = cells[j * 2], cells[j * 2 + 1]
+            cell_vcenter(lc); cell_vcenter(vc)
+            if label:
+                shade_cell(lc, LABEL_BG)
+                fill_cell(lc, label, D_FONT, bold=True, color=NAVY); cell_indent(lc, 80)
+            fill_cell(vc, str(val), D_FONT)
+    table_fixed(t, [2300, 2020, 2300, 2020])  # 라벨열=최장 라벨'과학기술표준분류(중)' 한 줄 최소폭
 
     # 적합성 판단 (강조 라인)
     p = doc.add_paragraph()

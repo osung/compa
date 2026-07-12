@@ -558,6 +558,74 @@ def llm_score(demand, cands):
     return scores
 
 
+# ---- 범용 적합도 평가(방향 무관: 과제-기업, 기업-과제, 기업-특허, 수요기술-과제 등) ----
+_SYS_DOC = (
+    "당신은 기술사업화 매칭을 평가하는 전문가입니다. "
+    "기준이 되는 문서(기업·국가 R&D 과제·기술 수요·특허 등)와 후보 문서들 사이의 "
+    "실질적 적합도를 냉정하게 평가합니다.")
+
+
+def _guide_doc(src_label, cand_label):
+    return (
+        f"각 [{cand_label}] 후보가 위 [{src_label}]와(과) 기술적으로 얼마나 적합·관련되는지 "
+        "0~100 정수로 평가하세요.\n"
+        "  90-100: 핵심 기술/제품이 직접 부합하는 매우 높은 적합\n"
+        "  70-89 : 핵심 기술·응용 분야가 상당 부분 부합\n"
+        "  40-69 : 일부 요소만 관련(부분 적합)\n"
+        "  10-39 : 분야만 유사하거나 약하게 관련\n"
+        "  0-9   : 사실상 무관\n"
+        "키워드 표면 일치가 아니라 기술 내용·적용 관점의 실질 적합도를 보세요.\n"
+        "반드시 아래 JSON 형식으로만, 모든 후보에 대해 답하세요(reason 은 40자 이내 한국어):\n"
+        '{"results": [{"id": <후보번호>, "score": <0-100 정수>, "reason": "<근거>"}, ...]}'
+    )
+
+
+def _src_block(text, label):
+    return f"[{label}]\n{text}"
+
+
+def _cand_block_doc(cands, label, maxlen=DESC_CAND):
+    lines = [f"[평가 대상 {label} 목록]"]
+    for c in cands:
+        lines.append(f"{c['id']}. {str(c.get('text', '')).strip()[:maxlen]}")
+    return "\n".join(lines)
+
+
+def llm_score_doc(source, cands, src_label="기준 문서", cand_label="후보", cand_maxlen=DESC_CAND):
+    """방향 무관 범용 적합도 평가(0~100).
+
+    source     : 기준측 문서 텍스트(문자열)
+    cands      : [{id, text}] — id=1..K, text=후보 문서 텍스트
+    src_label  : 기준측 엔티티 유형명(프롬프트 표시용)
+    cand_label : 대상측 엔티티 유형명(프롬프트 표시용)
+    cand_maxlen: 후보 텍스트 절단 길이
+
+    예) llm_score_doc(과제문서, 기업후보들, '국가 R&D 과제', '기업')
+        llm_score_doc(기업문서, 과제후보들, '기업', '국가 R&D 과제')
+        llm_score_doc(기업문서, 특허후보들, '기업', '특허')
+        llm_score_doc(수요문서, 과제후보들, '수요기술', '국가 R&D 과제')
+
+    반환 {id: (score, reason)} — 누락분은 score=0."""
+    scores = {}
+    src = str(source or "").strip()
+    guide = _guide_doc(src_label, cand_label)
+    for b in range(0, len(cands), LLM_BATCH):
+        batch = cands[b:b + LLM_BATCH]
+        user = (f"{_src_block(src, src_label)}\n\n"
+                f"{_cand_block_doc(batch, cand_label, cand_maxlen)}\n\n{guide}")
+        msgs = [{"role": "system", "content": _SYS_DOC},
+                {"role": "user", "content": user}]
+        try:
+            out = stream_explanation(msgs, max_tokens=LLM_MAXTOK, temperature=0.0, top_p=1.0)
+            parsed = _parse_scores(out)
+        except Exception as e:
+            print(f"      ! LLM 배치 실패({b}): {e}")
+            parsed = {}
+        for c in batch:
+            scores[c["id"]] = parsed.get(c["id"], (0, "(LLM 응답 누락)"))
+    return scores
+
+
 # ---- 상세 추천 근거(4섹션) — build_messages/stream_explanation 재사용 + 수요기술 사양 근거 추가 ----
 EX_FMT = ["연관성", "수요기술 사양 적합성", "추천 과제의 우수성", "유사 사례 및 실적"]
 _EX_GUIDE = {
@@ -824,6 +892,75 @@ def extract_keywords(demand):
                     kws.append(v)
                 if len(kws) >= KW_MAX:
                     break
+    return kws[:KW_MAX]
+
+
+# ---- 범용 문서 키워드 추출(기업/과제/기술/특허/기술수요 등) ----
+_KW_DOC_SYS = (
+    "당신은 기술사업화 문서에서 핵심 기술 키워드를 추출하는 전문가입니다. "
+    "기업 소개·R&D 과제·기술 설명·특허 명세·기술 수요 등 어떤 유형의 문서가 들어오더라도, "
+    "문서의 기술적 실체를 대표하고 검색·매칭에 유용한 구체적 기술 용어만 선별합니다.")
+_KW_DOC_GUIDE = (
+    "위 [문서]에서 이 문서의 기술적 실체를 대표하는 핵심 기술 키워드를 "
+    f"{KW_MIN}~{KW_MAX}개 추출하되, 문서를 가장 잘 대표하는 중요한 키워드부터 순서대로 나열하세요.\n"
+    "  - 소재/공정/성분/구조/기능/성능/대상/응용분야 등 구체적 기술 명사·전문용어 위주(한글·영문 혼용 허용)\n"
+    "  - 문서 유형에 상관없이, 검색·매칭에 실제로 도움이 되는 식별력 있는 용어만 선별\n"
+    "  - 핵심 영문 전문용어·약어·물질명(예: Bioavailability, Platycodin D, CRISPR, OLED)은 그대로 보존\n"
+    "  - 특허의 청구항 상용문구(예: \"~하는 것을 특징으로 하는\", \"상기\")나 행정 표현은 키워드로 삼지 말 것\n"
+    "  - 가능한 한 단일/복합 명사 형태의 짧은 키워드로, 동일 개념은 하나로 통합\n"
+    "아래 불용어(및 이를 포함한 일반적 표현), 수식어·단위·수치·날짜·기관명/사업명은 키워드에서 제외하세요:\n"
+    "  기술, 제품, 개발, 연구, 시스템, 방법, 장치, 기반, 적용, 활용,\n"
+    "  산업, 방안, 구축, 확보, 강화, 개선, 향상, 최적화, 고도화, 실증,\n"
+    "  사업화, 상용화, 지원, 관리, 운영, 도입, 구현, 설계, 제작, 제조,\n"
+    "  생산, 분석, 평가, 검증, 관련, 분야, 요소, 과정, 프로세스, 통합,\n"
+    "  자동화, 혁신, 융합, 차세대, 첨단, 기타, 제조업, 사업, 회사, 업체,\n"
+    "  서비스, 판매, 업무, 제공, 이용, 사용, 처리, 수행, 부문, 종류,\n"
+    "  형태, 방식, 절차, 대상, 범위, 내용, 항목, 종목, 품목, 물품,\n"
+    "  물자, 시설, 설비, 장비, 기기, 기계, 도구, 용품, 자재, 재료,\n"
+    "  원료, 부품, 소재, 물질, 성분, 구조, 형식, 유형, 종별, 구분,\n"
+    "  분류, 목록, 도매업, 부대, 일체, 일반, 임대업, 판매업, 상기, 각호,\n"
+    "  공급, 호에, 서비스업, 소매업, 부동산, 매매, 전문, 응용, 목적, 대행업,\n"
+    "  신품, 공업, 소매, 가공, 상거래, 도매, 형성, 경영, 유지, 기자재,\n"
+    "  단계, 용역, 특수, 작업, 유사, 조립, 대행, 가공업, 무역업, 위,\n"
+    "  각항, 부대되는, 사업일체, 실시, 진행, 추진, 시행, 완료, 종료, 시작,\n"
+    "  착수, 설립, 설치, 반영, 포함, 제외, 및, 외, 내, 중,\n"
+    "  상, 하, 전, 후, 등, 것, 수\n"
+    "반드시 아래 JSON 형식으로만, 중요도가 높은 키워드부터 순서대로 답하세요:\n"
+    '{"keywords": ["가장 중요한 키워드", "다음 키워드", ...]}'
+)
+
+
+# 가이드가 '키워드로 삼지 말라'고 명시한 청구항/행정 상용문구.
+# LLM 가이드는 문장으로 배제를 지시하지만 규칙기반 폴백은 그 지시를 따르지 못하므로,
+# 최종 산출에서 두 경로(LLM·폴백) 모두에 일괄 적용해 특허 청구항 상용어 누수를 막는다.
+_KW_DOC_BOILERPLATE = {"특징", "상기", "것을", "것", "포함하는", "그것"}
+
+
+def _doc_block(text):
+    return f"[문서]\n{text}"
+
+
+def extract_keywords_doc(text):
+    """기업/과제/기술/특허/기술수요 등 임의의 기술사업화 문서 텍스트(문자열) →
+    LLM 으로 핵심 기술 키워드 추출(부족 시 규칙기반으로 보충)."""
+    text = str(text or "").strip()
+    msgs = [{"role": "system", "content": _KW_DOC_SYS},
+            {"role": "user", "content": f"{_doc_block(text)}\n\n{_KW_DOC_GUIDE}"}]
+    try:
+        kws = _parse_keywords(stream_explanation(msgs, max_tokens=600, temperature=0.0, top_p=1.0))
+    except Exception as e:
+        print(f"      ! 문서 키워드 추출 LLM 실패: {e}")
+        kws = []
+    if len(kws) < KW_MIN:                    # 폴백: 규칙기반 명사추출로 보충
+        seen = {k.casefold() for k in kws}
+        for v in normalize_user_input(text):
+            if v.casefold() not in seen:
+                seen.add(v.casefold())
+                kws.append(v)
+            if len(kws) >= KW_MAX:
+                break
+    # 가이드의 청구항/행정 상용문구 배제를 LLM·폴백 최종 산출에 일괄 적용
+    kws = [k for k in kws if k not in _KW_DOC_BOILERPLATE]
     return kws[:KW_MAX]
 
 

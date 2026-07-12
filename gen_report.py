@@ -334,6 +334,27 @@ def make_top_logo():
              min(im.width, x1 + pad), min(im.height, y1 + pad))).save(out)
     return out
 
+def _add_styleref(paragraph, style_name, size=8.5, color=NAVY, bold=False):
+    """헤더에 STYLEREF 필드 삽입 → 현재 페이지에서 가장 가까운 style_name 문단 텍스트를 자동 표시."""
+    run = paragraph.add_run()
+    rpr_src = None
+    # 서식용 임시 run 으로 rPr 생성 후 필드 run 들에 복제
+    tmp = paragraph.add_run("수요기술명")
+    style_run(tmp, size, bold=bold, color=color)
+    rpr = tmp._r.find(qn("w:rPr"))
+    fld = OxmlElement("w:fldSimple")
+    fld.set(qn("w:instr"), f' STYLEREF "{style_name}" \\* MERGEFORMAT ')
+    inner = OxmlElement("w:r")
+    if rpr is not None:
+        import copy as _c
+        inner.append(_c.deepcopy(rpr))
+    t = OxmlElement("w:t"); t.text = "수요기술명"; inner.append(t)
+    fld.append(inner)
+    tmp._r.addprevious(fld)
+    tmp._r.getparent().remove(tmp._r)   # 임시 run 제거(필드가 대체)
+    run._r.getparent().remove(run._r)
+
+
 def _hdr_bottom_rule(tbl):
     borders = OxmlElement("w:tblBorders")
     b = OxmlElement("w:bottom")
@@ -352,7 +373,9 @@ def setup_running_header(section):
     left, right = tbl.rows[0].cells
     lp = left.paragraphs[0]; lp.alignment = WD_ALIGN_PARAGRAPH.LEFT
     lp.paragraph_format.space_before = Pt(0); lp.paragraph_format.space_after = Pt(0)
-    style_run(lp.add_run("COMPA  기술수요–공공 R&D 매칭 보고서"), 8, color=MUTED, spacing=20)
+    # 좌측 강조 바 + 현재 수요기술명(STYLEREF: 가장 가까운 Heading 2 = 수요 제목 자동 반영)
+    style_run(lp.add_run("▍ "), 9, bold=True, color=ACCENT)
+    _add_styleref(lp, "Heading 2", size=8.5, color=NAVY, bold=True)
     cell_vcenter(left)
     rp = right.paragraphs[0]; rp.alignment = WD_ALIGN_PARAGRAPH.RIGHT   # 로고를 셀 오른쪽 끝으로
     rp.paragraph_format.space_before = Pt(0); rp.paragraph_format.space_after = Pt(0)

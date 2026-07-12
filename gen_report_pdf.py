@@ -101,14 +101,36 @@ class Doc(BaseDocTemplate):
         fr = Frame(LM, BM, CW, PAGE_H - TM - BM, id="n", topPadding=0, bottomPadding=0)
         self.addPageTemplates([PageTemplate(id="cover", frames=[fr], onPage=self._cover),
                                PageTemplate(id="body", frames=[fr], onPage=self._body)])
+        self.cur_no = ""; self.cur_name = ""
+    def afterFlowable(self, flowable):
+        dm = getattr(flowable, "_demand", None)
+        if dm is not None:
+            self.cur_no, self.cur_name = dm
     def _cover(self, c, d):
         draw_logo(c, PAGE_H - TM + 4)
     def _body(self, c, d):
         c.saveState()
-        c.setFont("Sans", 8); c.setFillColor(MUTED)
-        c.drawString(LM, PAGE_H - TM + 7, "COMPA  기술수요–공공 R&D 매칭 보고서")
-        draw_logo(c, PAGE_H - TM + 3)
-        c.setStrokeColor(HAIR); c.setLineWidth(0.6); c.line(LM, PAGE_H - TM, PAGE_W - RM, PAGE_H - TM)
+        ytop = PAGE_H - TM
+        if self.cur_name:                         # 현재 수요기술명 러닝헤더(강조 태그 + 제목)
+            tag = f"수요 {self.cur_no}"
+            c.setFont("Sans-B", 7.5); tw = c.stringWidth(tag, "Sans-B", 7.5); pad = 4
+            c.setFillColor(ACCENT); c.roundRect(LM, ytop + 2.5, tw + 2 * pad, 11.5, 2.2, fill=1, stroke=0)
+            c.setFillColor(colors.white); c.drawString(LM + pad, ytop + 5.5, tag)
+            nx = LM + tw + 2 * pad + 7
+            avail = (PAGE_W - RM - LOGO_W - 8) - nx
+            name = self.cur_name
+            c.setFont("Sans-B", 9)
+            if c.stringWidth(name, "Sans-B", 9) > avail:
+                while name and c.stringWidth(name + "…", "Sans-B", 9) > avail:
+                    name = name[:-1]
+                name += "…"
+            c.setFillColor(NAVY); c.drawString(nx, ytop + 5.5, name)
+        else:
+            c.setFont("Sans", 8); c.setFillColor(MUTED)
+            c.drawString(LM, ytop + 6, "COMPA  기술수요–공공 R&D 매칭 보고서")
+        draw_logo(c, ytop + 3)
+        c.setStrokeColor(HAIR); c.setLineWidth(0.6); c.line(LM, ytop, PAGE_W - RM, ytop)
+        c.setStrokeColor(ACCENT); c.setLineWidth(1.8); c.line(LM, ytop, LM + 18, ytop)  # 좌측 강조 틱
         n = d.page - COVER_PAGES
         if n >= 1:
             c.setFont("Sans", 9); c.setFillColor(MUTED)
@@ -211,7 +233,9 @@ def chapter(no, f, ks):
 def demand_block(k, dm):
     badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="#0E7C86"> 수요 {esc(k)} </font>'
              f'  <font name="Sans-B" color="#14315C" size="14">{esc(dm["수요기술명"])}</font>')
-    story.append(Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20, spaceAfter=5)))
+    h2p = Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20, spaceAfter=5))
+    h2p._demand = (k, dm["수요기술명"])          # 러닝헤더가 현재 수요기술명을 추적하도록 표식
+    story.append(h2p)
     story.append(mktable([[""]], [CW], [("LINEBELOW", (0, 0), (-1, -1), 0.6, HAIR)]))
     story.append(Spacer(1, 4))
     rows = [[P("기업명", 9.5, NAVY, TA_CENTER, bold=True), P(dm.get("기업명", ""), 9)]]

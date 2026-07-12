@@ -232,7 +232,8 @@ def chapter(no, f, ks):
 def demand_block(k, dm):
     badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="#0E7C86"> 수요 {esc(k)} </font>'
              f'  <font name="Sans-B" color="#14315C" size="14">{esc(dm["수요기술명"])}</font>')
-    story.append(Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20, spaceAfter=5)))
+    story.append(Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20,
+                           spaceAfter=5, leftIndent=59, firstLineIndent=-59)))  # 배지 폭만큼 내어쓰기
     story.append(mktable([[""]], [CW], [("LINEBELOW", (0, 0), (-1, -1), 0.6, HAIR)]))
     story.append(Spacer(1, 4))
     rows = [[P("기업명", 9.5, NAVY, TA_CENTER, bold=True), P(dm.get("기업명", ""), 9)]]
@@ -261,7 +262,8 @@ def top_detail(tp, dk_no, dk_name):
     pid = str(tp["과제고유번호"]); ex = pidf.get(pid, {})
     title = (f'<font name="Sans-B" color="#FFFFFF" backColor="#14315C"> TOP {tp["rank"]} </font>'
              f'  <font name="Sans-B" color="#1B2430" size="12.5">{esc(tp["과제명"])}</font>')
-    titlep = Paragraph(title, ParagraphStyle("h3", fontName="Sans-B", fontSize=12.5, leading=17, spaceAfter=3))
+    titlep = Paragraph(title, ParagraphStyle("h3", fontName="Sans-B", fontSize=12.5, leading=17,
+                       spaceAfter=3, leftIndent=48, firstLineIndent=-48))  # 배지 폭만큼 내어쓰기
     titlep._demand_hdr = (dk_no, dk_name)         # 이 상세 페이지 상단에 수요기술명 헤더 그림
     block = [titlep, mktable([[""]], [CW], [("LINEBELOW", (0, 0), (-1, -1), 0.6, HAIR)]), Spacer(1, 2)]
     info = [("과제고유번호", pid)]

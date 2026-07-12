@@ -118,6 +118,14 @@
 - 항목(있는 것만, 순서): `과제고유번호` · `과제수행기간`(YYYY.MM.DD~ 또는 YYYY년~YYYY년) · `과학기술표준분류(중)` · `연구개발단계` · `과제수행기관` · **`연구책임자`** · **`국가연구자번호`** · `연구수행주체`.
 - ⚠️ `table_fixed` 는 python-docx 기본 `tblW(w=0 autofit)`·`tblLayout` 을 **먼저 제거**하고 재설정할 것. 중복되면 Word가 첫 autofit 을 따라 고정폭을 무시(라벨 줄바꿈 발생). PDF·docx 모두 이 4열·라벨폭 규칙 동일.
 
+### 6-5. 특허 실적 표 (각 TopN 상세 블록, 상세 매칭 근거 다음)
+- 특허 실적이 있는 과제만 표시. 섹션 라벨 `▍특허 실적 (N건)`. 8열: `구분` · `특허명` · `출원·등록기관` · `국가` · `출원일` · `출원번호` · `등록일` · `등록번호`. 헤더 네이비·흰 글자, 얼룩말 행, 8pt(docx 7.5pt).
+- **소스**: `../apollo/df_pr_patent_260710_detail.pkl` → `_patent_prep.py` 로 `scratchpad/pid_patents.json` 캐시(매칭 pid 115개, 병합 후 426건).
+- **다년도 과제**: 데이터가 `과제고유번호` 로 묶여 있어 **해당 pid 의 전 연도 특허가 자동 포함**.
+- **출원/등록 병합**: 같은 특허가 출원 레코드(출원일·출원번호)와 등록 레코드(등록번호·등록일)로 분리되어 있으므로 `(과제, 출원번호)` 로 병합해 한 행으로. **등록 실적 우선**(정렬: 등록 먼저→최신순), 등록 건도 **출원일·출원번호 병기**. 등록 없으면 `구분=출원`.
+- 날짜 `YYYYMMDD`→`YYYY.MM.DD`; 일자 `00`이면 `YYYY.MM`, 월도 `00`이면 `YYYY` 로 정리.
+- 특허 표는 길어질 수 있어(최다 21건) 상세 블록 KeepTogether **밖**에 두어 다음 페이지로 흐르도록 허용(1과제 1페이지 규칙의 예외).
+
 ## 7. 표기 금지 / 제외
 
 - **'출처' 관련 표기 전면 삭제**: Top 제목의 `(출처:기존/신규/수동)` 접미사, 분야 개요의 `· 출처 …`, `· 후보 출처 태그 —` 범례 줄, `최종 추천 과제 출처 분포 …` 줄 모두 제거.
@@ -132,6 +140,7 @@
 - 편집 스크립트(참고): `_patch_docx.py`(근거 채움+헤더), `_strip_source.py`(출처 제거), `_add_disclaimer.py`(경고문), `_add_pagenum.py`(페이지번호), `_demand_table.py`(수요 정보 표), `_add_year_col.py`(수행년도 열), `_fmt_top5.py`(정렬·2줄), `_justify.py`(양쪽 맞춤), `_proj_meta_prep.py`+`_add_proj_table.py`(과제 정보표), `_del_summary.py`(전체 요약 삭제), 근거 생성 `_regen_run.py`·`_regen_shortreason.py`.
 - 통합 생성: **`build_report.py`** — 원본(`COMPA_최종Top5_보고서_원본.docx`)에 위 규칙을 순서대로 적용해 최종 보고서를 재현(전체 390건). 기본은 기존 근거 재사용(모델 불필요), `--regen` 시 Qwen3.5-35B-A3B로 근거 재생성.
 - 정본 동기화: **`_rebuild_final.py`** — `통합best.json`·담당자 pkl/xlsx의 top5를 보고서 최종 선정으로 교체(식별키 `(기업,수요,과제명)`, pid는 소스에서). **`_fix_projtable_pids.py`** — 과제 정보표 pid 충돌 정정.
+- 보조 데이터 캐시: **`_build_full_inputs.py`**(필터 배치→통합best+pid_fields+demand_field), **`_patent_prep.py`**(특허 실적→pid_patents.json), **`rematch_filtered.py`**(필터 재매칭 드라이버).
 
 ## 9. 출판물 디자인 (v2~; `gen_report.py`)
 

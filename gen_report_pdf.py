@@ -57,6 +57,8 @@ def P(txt, size=9, color=INK, align=TA_LEFT, leading=None, bold=False, family="S
 demands = json.load(open(os.environ.get("COMPA_REPORT_JSON", os.path.join(HERE, "COMPA_통합best.json")), encoding="utf-8"))
 pidf = json.load(open(os.path.join(SCRATCH, "pid_fields.json"), encoding="utf-8"))
 field6t = json.load(open(os.path.join(SCRATCH, "demand_field.json"), encoding="utf-8"))
+_pp = os.path.join(SCRATCH, "pid_patents.json")
+patents = json.load(open(_pp, encoding="utf-8")) if os.path.exists(_pp) else {}
 
 def fmt_period(desc):
     m = re.search(r'(\d{4})년\s*\d{1,2}월\s*\d{1,2}일에 시작.*?(\d{4})년\s*\d{1,2}월\s*\d{1,2}일에 종료', desc or "")
@@ -271,6 +273,27 @@ def top_detail(tp):
                                f'<font name="Serif" color="#1B2430">{esc(body)}</font>',
                                ParagraphStyle("sec", fontSize=9, leading=13.5, alignment=TA_JUSTIFY, spaceAfter=4)))
     story.append(KeepTogether(block))
+    # ---- 특허 실적(있는 경우): 등록 우선, 출원정보 병기. 다년도 전 연도 포함 ----
+    pats = patents.get(pid, [])
+    if pats:
+        story.append(section_label(f"특허 실적  ({len(pats)}건)", before=6, after=3, size=10.5))
+        head = [P(x, 8, HEADFG, TA_CENTER, bold=True) for x in
+                ("구분", "특허명", "출원·등록기관", "국가", "출원일", "출원번호", "등록일", "등록번호")]
+        rows = [head]
+        for pt in pats:
+            reg = pt["상태"] == "등록"
+            rows.append([
+                P(pt["상태"], 8, (NAVY if reg else MUTED), TA_CENTER, bold=reg),
+                P(pt["특허명"], 8, INK, leading=10),
+                P(pt["기관"], 8, INK, TA_CENTER, leading=10),
+                P(pt["국가"], 8, INK, TA_CENTER),
+                P(pt["출원일"], 8, INK, TA_CENTER),
+                P(pt["출원번호"], 8, INK, TA_CENTER),
+                P(pt["등록일"], 8, INK, TA_CENTER),
+                P(pt["등록번호"], 8, INK, TA_CENTER)])
+        st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)], fontsize=8)
+        for i in range(2, len(rows), 2): st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
+        story.append(mktable(rows, [9 * mm, 44 * mm, 26 * mm, 8 * mm, 16 * mm, 26 * mm, 16 * mm, 25 * mm], st))
     story.append(PageBreak())
 
 # ---- 조립 ----

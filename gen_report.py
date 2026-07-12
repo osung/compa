@@ -71,6 +71,9 @@ def load_data():
     pidf = json.load(open(os.path.join(SCRATCH, "pid_fields.json"), encoding="utf-8"))
     return demands, fields, pidf
 
+_PP = os.path.join(SCRATCH, "pid_patents.json")
+PATENTS = json.load(open(_PP, encoding="utf-8")) if os.path.exists(_PP) else {}
+
 def extract_period(desc):
     m = re.search(r'(\d{4})년\s*\d{1,2}월\s*\d{1,2}일에 시작.*?(\d{4})년\s*\d{1,2}월\s*\d{1,2}일에 종료', desc)
     if m:
@@ -590,6 +593,32 @@ def build_top_detail(doc, tp, pidf):
         p.paragraph_format.space_after = Pt(SEC_AFTER); p.paragraph_format.line_spacing = D_LS
         style_run(p.add_run(title.strip("[]") + "  "), D_FONT, bold=True, color=BLUE)
         style_run(p.add_run(body), D_FONT, color=INK, family=SERIF)
+
+    # ---- 특허 실적(있는 경우): 등록 우선, 출원정보 병기. 다년도 전 연도 포함 ----
+    pats = PATENTS.get(pid, [])
+    if pats:
+        para(doc, f"특허 실적  ({len(pats)}건)", D_FONT + 1, bold=True, color=NAVY, before=6, after=3)
+        heads = ("구분", "특허명", "출원·등록기관", "국가", "출원일", "출원번호", "등록일", "등록번호")
+        t = doc.add_table(rows=1, cols=len(heads))
+        table_grid(t, HAIR, 4, "all"); table_cellmar(t, 24, 24, 60, 60)
+        for c, txt in zip(t.rows[0].cells, heads):
+            shade_cell(c, HEAD_BG); cell_vcenter(c)
+            fill_cell(c, txt, 7.5, bold=True, color=HEAD_FG, align=WD_ALIGN_PARAGRAPH.CENTER)
+        for idx, pt in enumerate(pats):
+            row = t.add_row().cells
+            if idx % 2 == 1:
+                for c in row: shade_cell(c, ZEBRA)
+            reg = pt["상태"] == "등록"
+            vals = [pt["상태"], pt["특허명"], pt["기관"], pt["국가"], pt["출원일"],
+                    pt["출원번호"], pt["등록일"], pt["등록번호"]]
+            aligns = [WD_ALIGN_PARAGRAPH.CENTER, None, WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.CENTER,
+                      WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.CENTER]
+            for c, v, al in zip(row, vals, aligns):
+                cell_vcenter(c)
+                fill_cell(c, str(v), 7.5, align=al,
+                          color=(NAVY if (reg and v == pt["상태"]) else INK),
+                          bold=(reg and v == pt["상태"]))
+        table_fixed(t, [560, 2680, 1500, 460, 900, 1500, 900, 1180])
 
 if __name__ == "__main__":
     build()

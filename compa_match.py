@@ -707,6 +707,51 @@ def gen_explanation(demand, proj):
     return "\n\n".join(parts) if parts else out.strip()
 
 
+# ---- 표'매칭 근거'(한 줄) — 긍정형 few-shot. llm_score 의 비판적 reason 대신 이걸 LLM판단근거로 사용 ----
+_MR_SYS = (
+    "너는 기업 기술수요와 국가 R&D 과제의 '매칭 근거'를 한 문장으로 요약하는 한국어 AI다. "
+    "이 과제가 왜 해당 수요에 추천되는지, 두 대상이 공유하는 핵심 기술·목적을 근거로 긍정적으로 서술한다.\n"
+    "작성 규칙:\n"
+    "1) 60자 이내 한 문장. 명사형/음슴체 종결(예: '~ 기술이 수요와 부합', '~에 활용 가능', '~ 요구사항과 일치').\n"
+    "2) 과제 개요·수행기관·기간·분야 등 '설명'은 쓰지 말고, 수요와 과제의 '접점(매칭 이유)'만 쓴다.\n"
+    "3) 부정 평가('~ 부재', '~ 미포함', '~ 불일치', '~ 미흡', '다름', '부족')는 쓰지 않는다. "
+    "완전히 일치하지 않아도 공유하는 기술적 접점을 중심으로 '~에 활용 가능', '~ 기반 마련', '~ 부분 부합' 처럼 "
+    "기여 가능성으로 표현한다.\n"
+    "4) 문장 하나만 출력. 따옴표·머리기호·부연 금지.\n"
+    "5) few-shot 예시는 형식·톤 참고용이며, 예시의 고유명사·문구를 재사용하지 말고 현재 입력만 근거로 작성한다."
+)
+def _mr_demo(dem, proj, ans):
+    return [{"role": "user", "content": f"[기업 기술수요]\n{dem}\n\n[R&D 과제]\n{proj}\n\n매칭 근거(한 문장):"},
+            {"role": "assistant", "content": ans}]
+_MR_FEWSHOT = (
+    _mr_demo("수요기술명: 도라지 사포닌 정제·표준화 및 분말 제형화 기술\n수요기술 내용: 다년근 도라지 유래 플라티코딘 D 등 사포닌을 표준화하고 분말 제형으로 안정화",
+             "과제명: 도라지 사포닌 추출 및 정제 공정 표준화 연구\n과제설명: 도라지에서 사포닌을 고효율로 추출·정제하고 분말화하는 표준 공정 개발",
+             "도라지 사포닌 추출·정제·분말화 표준 공정이 수요 요구사항과 직접 일치")
+    + _mr_demo("수요기술명: 엣지 컴퓨터 기반 차량 번호판 인식 기술\n수요기술 내용: 저전력 엣지 디바이스 실시간 번호판 OCR용 딥러닝 모델 경량화",
+               "과제명: 엣지 인공지능 자동화 기술\n과제설명: 신경망 모델 압축·양자화 및 자동 설계로 엣지 저전력 실시간 추론 구현",
+               "모델 압축·양자화 기반 엣지 저전력 실시간 추론 기술이 경량 OCR 수요와 부합")
+    + _mr_demo("수요기술명: 견과류 코팅형 인지기능 개선 소재화 기술\n수요기술 내용: 인지기능 개선 성분을 견과류에 코팅해 고령친화 제품으로 소재화",
+               "과제명: 감탄닌 소재 인지기능 개선 연구\n과제설명: 감탄닌 천연물의 인지기능 개선 효능 규명 및 기능성 소재 개발",
+               "인지기능 개선 천연소재 연구가 수요의 기능성 소재 확보에 활용 가능")
+)
+def gen_match_reason(demand, proj):
+    """수요-과제 접점을 긍정형 한 문장으로 생성(표 '매칭 근거'용). 실패 시 빈 문자열."""
+    dem = (f"수요기술명: {demand.get('수요기술명','')}\n"
+           f"수요기술 내용: {str(demand.get('수요기술 내용','') or '')[:600]}\n"
+           f"수요기술 사양: {str(demand.get('수요기술 사양','') or '')[:350]}")
+    pj = f"과제명: {proj.get('과제명','')}\n과제설명: {str(proj.get('설명','') or '')[:600]}"
+    user = f"[기업 기술수요]\n{dem}\n\n[R&D 과제]\n{pj}\n\n매칭 근거(한 문장):"
+    msgs = [{"role": "system", "content": _MR_SYS}] + _MR_FEWSHOT + [{"role": "user", "content": user}]
+    try:
+        out = stream_explanation(msgs, max_tokens=120, temperature=0.0, top_p=1.0).strip()
+    except Exception:
+        return ""
+    out = out.strip().strip('"').strip("'").split("\n")[0].strip()
+    if out.startswith("매칭 근거"):
+        out = out.split(":", 1)[-1].strip()
+    return out[:120]
+
+
 # =====================================================================
 # [4] 기업별 탭(시트) 분리 저장 — 셀 wrap 으로 상세근거를 여러 줄로 표시
 # =====================================================================
@@ -1151,7 +1196,8 @@ def match_for(assignee, records, kw_ckpt, corpus, encode, args):
     cdesc_idx = corpus.get("cdesc_idx", {})
 
     llm_path, ex_path = llm_ckpt_path(assignee), ex_ckpt_path(assignee)
-    llm_ckpt, ex_ckpt = {}, {}
+    rs_path = os.path.join(OUT_DIR, f"compa2stage_{assignee}_reason_ckpt.json")  # 긍정형 매칭근거
+    llm_ckpt, ex_ckpt, rs_ckpt = {}, {}, {}
     if os.path.exists(llm_path):
         with open(llm_path, encoding="utf-8") as f:
             llm_ckpt = json.load(f)
@@ -1160,6 +1206,9 @@ def match_for(assignee, records, kw_ckpt, corpus, encode, args):
         with open(ex_path, encoding="utf-8") as f:
             ex_ckpt = json.load(f)
         print(f"      상세근거 체크포인트 로드: {len(ex_ckpt)}건")
+    if os.path.exists(rs_path):
+        with open(rs_path, encoding="utf-8") as f:
+            rs_ckpt = json.load(f)
 
     final_rows = []
     for n, rec in enumerate(records, 1):
@@ -1228,11 +1277,17 @@ def match_for(assignee, records, kw_ckpt, corpus, encode, args):
                 ex_ckpt[ekey] = gen_explanation(demand_ex, proj)[:DESC_OUT]
                 with open(ex_path, "w", encoding="utf-8") as f:
                     json.dump(ex_ckpt, f, ensure_ascii=False)
+            # 표 '매칭 근거' = 긍정형 한 문장(llm_score 의 비판적 reason 대신). 생성 실패 시 폴백.
+            if not args.no_explain and ekey not in rs_ckpt:
+                rs_ckpt[ekey] = gen_match_reason(demand, {"과제명": pname[i], "설명": pdesc[i]})
+                with open(rs_path, "w", encoding="utf-8") as f:
+                    json.dump(rs_ckpt, f, ensure_ascii=False)
+            match_reason = rs_ckpt.get(ekey) or reason
             final_rows.append({
                 "번호": demand_no, "기업명": company,
                 "기술번호": cell(rec, "기술번호"), "수요기술명": cell(rec, "수요기술명"),
                 "키워드": kw_string, "rank": rank,
-                "LLM점수": s, "LLM판단근거": reason,
+                "LLM점수": s, "LLM판단근거": match_reason,
                 "과제고유번호": pid[i], "과제명": pname[i], "과제수행기관": org[i],
                 "유사도_과제코사인": round(float(cos1[i]), 6),
                 "유망성점수": round(float(promise[i]), 4),

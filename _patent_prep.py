@@ -13,6 +13,13 @@ def s(v):
     v = str(v).strip()
     return "" if v in ("nan", "None", "NaT") else v
 
+# 출원/등록 국가코드 → 국가명 (XI=PCT 'PCT/KR…', XU=유럽 EP 출원번호 형식)
+_COUNTRY = {"KR": "한국", "US": "미국", "CN": "중국", "JP": "일본",
+            "EP": "유럽", "XU": "유럽", "XI": "PCT", "WO": "PCT"}
+def country(code):
+    c = s(code)
+    return _COUNTRY.get(c.upper(), c)
+
 def ymd(v):
     v = s(v).split(".")[0].replace("-", "")
     if len(v) == 8 and v.isdigit():
@@ -47,7 +54,7 @@ for pid, g in sub.groupby("과제고유번호"):
         pats.append({
             "특허명": s(base["발명의 명칭"]),
             "기관": s((app or base)["출원/등록 기관"]) or s(base["출원/등록 기관"]),
-            "국가": s(base["출원/등록 국가코드"]),
+            "국가": country(base["출원/등록 국가코드"]),
             "출원번호": s(base["출원번호"]),
             "출원일": ymd((app or base)["출원일자"]) or ymd(base["출원일자"]),
             "등록번호": s(reg["등록번호"]) if reg else "",

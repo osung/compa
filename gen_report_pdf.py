@@ -87,8 +87,8 @@ def split_sections(detail):
 
 # ---- 페이지 ----
 PAGE_W, PAGE_H = A4
-LM, RM, TM, BM = 18 * mm, 18 * mm, 28 * mm, 16 * mm   # TM 28mm: 헤더↔본문 여유
-HDR_Y = PAGE_H - 15 * mm                               # 러닝헤더(괘선) 위치 — 페이지 위쪽
+LM, RM, TM, BM = 18 * mm, 18 * mm, 23 * mm, 16 * mm   # TM 23mm: 헤더↔본문 적당한 여유
+HDR_Y = PAGE_H - 14 * mm                               # 러닝헤더(괘선) 위치 — 페이지 위쪽
 CW = PAGE_W - LM - RM
 LOGO_W = 29 * mm; LOGO_H = LOGO_W * 276 / 1295
 
@@ -102,33 +102,31 @@ class Doc(BaseDocTemplate):
         fr = Frame(LM, BM, CW, PAGE_H - TM - BM, id="n", topPadding=0, bottomPadding=0)
         self.addPageTemplates([PageTemplate(id="cover", frames=[fr], onPage=self._cover),
                                PageTemplate(id="body", frames=[fr], onPage=self._body)])
-        self.cur_no = ""; self.cur_name = ""
     def afterFlowable(self, flowable):
-        dm = getattr(flowable, "_demand", None)
-        if dm is not None:
-            self.cur_no, self.cur_name = dm
+        # 상세(TOP) 페이지에만 수요기술명 헤더를 그림 → 새 수요 시작(intro) 페이지엔 미표시
+        hdr = getattr(flowable, "_demand_hdr", None)
+        if hdr is not None:
+            self._draw_demand_header(self.canv, hdr)
+    def _draw_demand_header(self, c, hdr):
+        no, name = hdr; ytop = HDR_Y
+        c.saveState()
+        tag = f"수요 {no}"
+        c.setFont("Sans-B", 7.5); tw = c.stringWidth(tag, "Sans-B", 7.5); pad = 4
+        c.setFillColor(ACCENT); c.roundRect(LM, ytop + 2.5, tw + 2 * pad, 11.5, 2.2, fill=1, stroke=0)
+        c.setFillColor(colors.white); c.drawString(LM + pad, ytop + 5.5, tag)
+        nx = LM + tw + 2 * pad + 7; avail = (PAGE_W - RM - LOGO_W - 8) - nx
+        c.setFont("Sans-B", 9); nm = name
+        if c.stringWidth(nm, "Sans-B", 9) > avail:
+            while nm and c.stringWidth(nm + "…", "Sans-B", 9) > avail:
+                nm = nm[:-1]
+            nm += "…"
+        c.setFillColor(NAVY); c.drawString(nx, ytop + 5.5, nm)
+        c.restoreState()
     def _cover(self, c, d):
         draw_logo(c, HDR_Y - 1)
-    def _body(self, c, d):
+    def _body(self, c, d):                        # 공통 헤더(로고·괘선·페이지번호)만. 수요명은 afterFlowable 에서.
         c.saveState()
-        ytop = HDR_Y                              # 헤더는 페이지 위쪽에, 본문 프레임은 TM 아래 → 여백 확보
-        if self.cur_name:                         # 현재 수요기술명 러닝헤더(강조 태그 + 제목)
-            tag = f"수요 {self.cur_no}"
-            c.setFont("Sans-B", 7.5); tw = c.stringWidth(tag, "Sans-B", 7.5); pad = 4
-            c.setFillColor(ACCENT); c.roundRect(LM, ytop + 2.5, tw + 2 * pad, 11.5, 2.2, fill=1, stroke=0)
-            c.setFillColor(colors.white); c.drawString(LM + pad, ytop + 5.5, tag)
-            nx = LM + tw + 2 * pad + 7
-            avail = (PAGE_W - RM - LOGO_W - 8) - nx
-            name = self.cur_name
-            c.setFont("Sans-B", 9)
-            if c.stringWidth(name, "Sans-B", 9) > avail:
-                while name and c.stringWidth(name + "…", "Sans-B", 9) > avail:
-                    name = name[:-1]
-                name += "…"
-            c.setFillColor(NAVY); c.drawString(nx, ytop + 5.5, name)
-        else:
-            c.setFont("Sans", 8); c.setFillColor(MUTED)
-            c.drawString(LM, ytop + 6, "COMPA  기술수요–공공 R&D 매칭 보고서")
+        ytop = HDR_Y
         draw_logo(c, ytop + 3)
         c.setStrokeColor(HAIR); c.setLineWidth(0.6); c.line(LM, ytop, PAGE_W - RM, ytop)
         c.setStrokeColor(ACCENT); c.setLineWidth(1.8); c.line(LM, ytop, LM + 18, ytop)  # 좌측 강조 틱
@@ -234,9 +232,7 @@ def chapter(no, f, ks):
 def demand_block(k, dm):
     badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="#0E7C86"> 수요 {esc(k)} </font>'
              f'  <font name="Sans-B" color="#14315C" size="14">{esc(dm["수요기술명"])}</font>')
-    h2p = Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20, spaceAfter=5))
-    h2p._demand = (k, dm["수요기술명"])          # 러닝헤더가 현재 수요기술명을 추적하도록 표식
-    story.append(h2p)
+    story.append(Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20, spaceAfter=5)))
     story.append(mktable([[""]], [CW], [("LINEBELOW", (0, 0), (-1, -1), 0.6, HAIR)]))
     story.append(Spacer(1, 4))
     rows = [[P("기업명", 9.5, NAVY, TA_CENTER, bold=True), P(dm.get("기업명", ""), 9)]]
@@ -259,14 +255,15 @@ def demand_block(k, dm):
     story.append(mktable(rows, [12 * mm, 58 * mm, 26 * mm, 18 * mm, CW - 114 * mm], st))
     story.append(PageBreak())
     for tp in dm["top5"]:
-        top_detail(tp)
+        top_detail(tp, k, dm["수요기술명"])
 
-def top_detail(tp):
+def top_detail(tp, dk_no, dk_name):
     pid = str(tp["과제고유번호"]); ex = pidf.get(pid, {})
     title = (f'<font name="Sans-B" color="#FFFFFF" backColor="#14315C"> TOP {tp["rank"]} </font>'
              f'  <font name="Sans-B" color="#1B2430" size="12.5">{esc(tp["과제명"])}</font>')
-    block = [Paragraph(title, ParagraphStyle("h3", fontName="Sans-B", fontSize=12.5, leading=18, spaceAfter=5)),
-             mktable([[""]], [CW], [("LINEBELOW", (0, 0), (-1, -1), 0.6, HAIR)]), Spacer(1, 5)]
+    titlep = Paragraph(title, ParagraphStyle("h3", fontName="Sans-B", fontSize=12.5, leading=17, spaceAfter=3))
+    titlep._demand_hdr = (dk_no, dk_name)         # 이 상세 페이지 상단에 수요기술명 헤더 그림
+    block = [titlep, mktable([[""]], [CW], [("LINEBELOW", (0, 0), (-1, -1), 0.6, HAIR)]), Spacer(1, 2)]
     info = [("과제고유번호", pid)]
     if fmt_period(tp.get("과제설명문", "")): info.append(("과제수행기간", fmt_period(tp.get("과제설명문", ""))))
     if extract_class(tp.get("과제설명문", "")): info.append(("과학기술표준분류(중)", extract_class(tp.get("과제설명문", ""))))
@@ -288,11 +285,11 @@ def top_detail(tp):
     if len(info) % 2 == 1:
         st.append(("BACKGROUND", (2, -1), (3, -1), colors.white))
     block.append(mktable(rows, [LW, VW, LW, VW], st))
-    block.append(Spacer(1, 5))
+    block.append(Spacer(1, 9))                    # 과제설명(정보표)↔적합성 판단: 여유 ↑
     block.append(Paragraph(f'<font name="Sans-B" color="#FFFFFF" backColor="#2C5FA0"> 적합성 판단 </font>'
                            f'  <font name="Sans-B" color="#1B2430" size="9.5">{esc(tp.get("판단근거",""))}</font>',
                            ParagraphStyle("fit", fontSize=9.5, leading=14, spaceAfter=4)))
-    block.append(section_label("상세 매칭 근거", before=4, after=3, size=10.5))
+    block.append(section_label("상세 매칭 근거", before=9, after=3, size=10.5))
     for tt, body in split_sections(tp.get("추천근거_상세", "")):
         block.append(Paragraph(f'<font name="Sans-B" color="#2C5FA0">[{esc(tt)}]</font>  '
                                f'<font name="Serif" color="#1B2430">{esc(body)}</font>',
@@ -301,7 +298,7 @@ def top_detail(tp):
     # ---- 특허 실적: 등록 우선, 출원정보 병기. 다년도 전 연도 포함. 없으면 '없음' 표기 ----
     pats = patents.get(pid, [])
     if pats:
-        story.append(section_label(f"특허 실적  ({len(pats)}건)", before=6, after=3, size=10.5))
+        story.append(section_label(f"특허 실적  ({len(pats)}건)", before=10, after=3, size=10.5))
         head = [P(x, 8, HEADFG, TA_CENTER, bold=True) for x in
                 ("구분", "특허명", "출원·등록기관", "국가", "출원일", "출원번호", "등록일", "등록번호")]
         rows = [head]
@@ -320,7 +317,7 @@ def top_detail(tp):
         for i in range(2, len(rows), 2): st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
         story.append(mktable(rows, [9 * mm, 44 * mm, 26 * mm, 8 * mm, 16 * mm, 26 * mm, 16 * mm, 25 * mm], st))
     else:
-        story.append(section_label("특허 실적", before=6, after=3, size=10.5))
+        story.append(section_label("특허 실적", before=10, after=3, size=10.5))
         story.append(mktable([[P("특허 실적 없음", 8.5, MUTED, TA_CENTER)]], [CW],
                      base_grid([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFBFD"))], fontsize=8.5)))
     story.append(PageBreak())

@@ -268,8 +268,8 @@ def setup_styles(doc):
             st.element.rPr.rFonts.set(qn(a), SANS)
 
 def set_margins(sec):
-    # 상단 여백을 키우고 헤더 거리는 위로 당겨(헤더↔본문 간격 ↑) 여유 있게
-    sec.top_margin = Inches(1.02); sec.bottom_margin = Inches(MARGIN_TB)
+    # 헤더↔본문 간격은 적당히(과하지 않게)
+    sec.top_margin = Inches(0.86); sec.bottom_margin = Inches(MARGIN_TB)
     sec.left_margin = Inches(MARGIN_LR); sec.right_margin = Inches(MARGIN_LR)
     sec.header_distance = Inches(0.35); sec.footer_distance = Inches(0.35)
 
@@ -571,7 +571,7 @@ def build_top_detail(doc, tp, pidf):
     pid = str(tp["과제고유번호"])
     h3 = doc.add_heading(level=3)
     h3.paragraph_format.page_break_before = True
-    h3.paragraph_format.space_before = Pt(0); h3.paragraph_format.space_after = Pt(6)
+    h3.paragraph_format.space_before = Pt(0); h3.paragraph_format.space_after = Pt(3)  # 제목↔정보표 좁힘
     pill = h3.add_run(f" TOP {tp['rank']} ")
     style_run(pill, 11, bold=True, color="FFFFFF"); run_shade(pill, NAVY)
     style_run(h3.add_run("  "), 12)
@@ -603,14 +603,14 @@ def build_top_detail(doc, tp, pidf):
             fill_cell(vc, str(val), D_FONT)
     table_fixed(t, [2300, 2020, 2300, 2020])  # 라벨열=최장 라벨'과학기술표준분류(중)' 한 줄 최소폭
 
-    # 적합성 판단 (강조 라인)
+    # 적합성 판단 (강조 라인) — 정보표와 간격 ↑
     p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(6); p.paragraph_format.space_after = Pt(3)
+    p.paragraph_format.space_before = Pt(11); p.paragraph_format.space_after = Pt(3)
     p.paragraph_format.line_spacing = 1.2
     tag = p.add_run(" 적합성 판단 "); style_run(tag, D_FONT, bold=True, color="FFFFFF"); run_shade(tag, BLUE)
     style_run(p.add_run("  " + tp.get("판단근거", "")), D_FONT + 0.5, bold=True, color=INK)
 
-    para(doc, "상세 매칭 근거", D_FONT + 1, bold=True, color=NAVY, before=4, after=3)
+    para(doc, "상세 매칭 근거", D_FONT + 1, bold=True, color=NAVY, before=9, after=3)
     for title, body in split_sections(tp.get("추천근거_상세", "")):
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -621,10 +621,10 @@ def build_top_detail(doc, tp, pidf):
     # ---- 특허 실적: 등록 우선, 출원정보 병기. 다년도 전 연도 포함. 없으면 '없음' 표기 ----
     pats = PATENTS.get(pid, [])
     if not pats:
-        para(doc, "특허 실적", D_FONT + 1, bold=True, color=NAVY, before=6, after=3)
+        para(doc, "특허 실적", D_FONT + 1, bold=True, color=NAVY, before=11, after=3)
         para(doc, "특허 실적 없음", D_FONT, color=MUTED)
     if pats:
-        para(doc, f"특허 실적  ({len(pats)}건)", D_FONT + 1, bold=True, color=NAVY, before=6, after=3)
+        para(doc, f"특허 실적  ({len(pats)}건)", D_FONT + 1, bold=True, color=NAVY, before=11, after=3)
         heads = ("구분", "특허명", "출원·등록기관", "국가", "출원일", "출원번호", "등록일", "등록번호")
         t = doc.add_table(rows=1, cols=len(heads))
         table_grid(t, HAIR, 4, "all"); table_cellmar(t, 24, 24, 60, 60)

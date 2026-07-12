@@ -87,7 +87,8 @@ def split_sections(detail):
 
 # ---- 페이지 ----
 PAGE_W, PAGE_H = A4
-LM, RM, TM, BM = 18 * mm, 18 * mm, 22 * mm, 16 * mm
+LM, RM, TM, BM = 18 * mm, 18 * mm, 28 * mm, 16 * mm   # TM 28mm: 헤더↔본문 여유
+HDR_Y = PAGE_H - 15 * mm                               # 러닝헤더(괘선) 위치 — 페이지 위쪽
 CW = PAGE_W - LM - RM
 LOGO_W = 29 * mm; LOGO_H = LOGO_W * 276 / 1295
 
@@ -107,10 +108,10 @@ class Doc(BaseDocTemplate):
         if dm is not None:
             self.cur_no, self.cur_name = dm
     def _cover(self, c, d):
-        draw_logo(c, PAGE_H - TM + 4)
+        draw_logo(c, HDR_Y - 1)
     def _body(self, c, d):
         c.saveState()
-        ytop = PAGE_H - TM
+        ytop = HDR_Y                              # 헤더는 페이지 위쪽에, 본문 프레임은 TM 아래 → 여백 확보
         if self.cur_name:                         # 현재 수요기술명 러닝헤더(강조 태그 + 제목)
             tag = f"수요 {self.cur_no}"
             c.setFont("Sans-B", 7.5); tw = c.stringWidth(tag, "Sans-B", 7.5); pad = 4

@@ -268,9 +268,10 @@ def setup_styles(doc):
             st.element.rPr.rFonts.set(qn(a), SANS)
 
 def set_margins(sec):
-    sec.top_margin = Inches(MARGIN_TB); sec.bottom_margin = Inches(MARGIN_TB)
+    # 상단 여백을 키우고 헤더 거리는 위로 당겨(헤더↔본문 간격 ↑) 여유 있게
+    sec.top_margin = Inches(1.02); sec.bottom_margin = Inches(MARGIN_TB)
     sec.left_margin = Inches(MARGIN_LR); sec.right_margin = Inches(MARGIN_LR)
-    sec.header_distance = Inches(0.4); sec.footer_distance = Inches(0.35)
+    sec.header_distance = Inches(0.35); sec.footer_distance = Inches(0.35)
 
 def build():
     global LOGO_PATH

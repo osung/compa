@@ -103,9 +103,38 @@ COMPA_PDF_OUT=COMPA_최종보고서.pdf     python gen_report_pdf.py   # PDF(배
 soffice --headless --convert-to pdf --outdir "$COMPA_SCRATCH" COMPA_최종보고서.docx
 ```
 
+## D-1. 보고서 생성 입력 JSON (4종) — 명세와 생성 방법
+
+`gen_report.py`(docx)·`gen_report_pdf.py`(PDF)는 **아래 JSON 4종만** 읽어 보고서를 만든다(LLM·apollo pkl 직접 참조 없음; 폰트·로고 정적 자산은 별도). apollo pkl은 이 JSON을 **만들 때만**(②) 쓰인다.
+
+| JSON | 위치 | 생성 스크립트 | 내용 | 소스 |
+|---|---|---|---|---|
+| `COMPA_통합best.json` | 저장소 루트 | **①매칭** 후 `_build_full_inputs.py`(또는 `_rebuild_final.py`) | 수요 78건 × Top5(과제·수행기관·rank·출처) + **매칭 근거(판단근거)·상세 4섹션(추천근거_상세)·과제설명문** = 매칭·근거의 **정본** | 매칭 산출물 `COMPA_필터*_최종추천.pkl` |
+| `pid_fields.json` | `$COMPA_SCRATCH` | `_build_full_inputs.py` | pid→ `연구개발단계·연구수행주체·연구책임자명·국가연구자번호` | apollo `public_RnD_embeddings_pro_with_desc_260708.pkl`, `public_RnD_PI_260610.pkl` |
+| `pid_patents.json` | `$COMPA_SCRATCH` | `_patent_prep.py` | pid→ 특허 실적 목록(등록 우선·출원 병기, 다년도 전 연도) | apollo `df_pr_patent_260710_detail.pkl` |
+| `demand_field.json` | `$COMPA_SCRATCH` | `_build_full_inputs.py` | 수요번호→ 6T 분야(BT/IT/NT/ET/융합) | `COMPA_진성수요_원본.xlsx` |
+
+생성(= 런북 ②단계):
+```bash
+python _build_full_inputs.py   # COMPA_통합best.json + $COMPA_SCRATCH/{pid_fields,demand_field}.json
+python _patent_prep.py         # $COMPA_SCRATCH/pid_patents.json
+```
+- `COMPA_통합best.json`은 **① 매칭(Qwen 35B)** 산출물을 통합한 것 = 매칭+근거의 정본. `_build_full_inputs.py`의 `BATCHES`(예: `COMPA_필터10/필터11_20/필터21_78_최종추천.pkl`)를 실제 태그에 맞춰 지정.
+- 나머지 3종은 apollo pkl·입력 xlsx에서 pid/수요번호로 뽑은 **캐시**라 매칭 없이도 갱신 가능(단 apollo 데이터 필요).
+- 스키마 예시 — `COMPA_통합best.json`:
+  ```json
+  { "1": { "기업명": "...", "수요기술명": "...", "수요기술 내용": "...", "수요기술 사양": "...",
+           "top5": [ { "rank": 1, "과제고유번호": "1345086170", "과제명": "...", "수행기관": "...",
+                       "LLM점수": 90, "출처": "기존+신규", "판단근거": "...(매칭 근거 한 줄)",
+                       "과제설명문": "...", "추천근거_상세": "[연관성] ... [수요기술 사양 적합성] ..." } ] } }
+  ```
+  `pid_fields.json`: `{ "1345086170": {"연구개발단계":"기초연구","연구수행주체":"대학","연구책임자명":"홍길동","국가연구자번호":"1000..."} }`
+  `pid_patents.json`: `{ "1345086170": [ {"특허명":"...","기관":"...","국가":"KR","출원번호":"...","출원일":"2021.03","등록번호":"...","등록일":"2022.05","상태":"등록"} ] }`
+  `demand_field.json`: `{ "1": "BT", "2": "BT", "17": "IT", ... }`
+
 ## E. 참고
 
-- **보고서만 재생성**: 이미 `COMPA_통합best.json`이 있으면 ①(매칭)을 건너뛰고 ②~④만 실행하면 된다(단, apollo 데이터·폰트·로고는 필요).
+- **보고서만 재생성**: 이미 `COMPA_통합best.json`이 있으면 ①(매칭)을 건너뛰고 ②~④만 실행하면 된다(단, apollo 데이터·폰트·로고는 필요). apollo 원본조차 없더라도 위 **JSON 4종이 이미 있으면 ③(보고서 생성)만으로 재현**된다.
 - 대용량 데이터·모델·산출물(pkl/xlsx/docx/pdf/폰트)은 **git 제외**. 다른 컴퓨터에선 B의 데이터를 별도로 확보해야 매칭이 재현된다.
 - 요청 모델이 Qwen3.6-35B-A3B였으나 미보유/네트워크 이슈로 본 세션은 3.5로 실행. 모델 교체는 `MV_MLX_MODEL`.
 

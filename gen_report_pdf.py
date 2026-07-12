@@ -216,7 +216,7 @@ def intro_toc(by_field):
     for i, f in enumerate([f for f in FIELD_ORDER if by_field[f]], 1):
         ks = by_field[f]
         rows.append([P(f"제 {i} 장", 10, colors.white, bold=True),
-                     P(f"{FIELD_TITLE[f]}  ({len(ks)}건)", 11, colors.white, bold=True),
+                     P(FIELD_TITLE[f], 11, colors.white, bold=True),
                      P(pg(CHAP_PAGE.get(i)), 10, colors.white, TA_RIGHT, bold=True)])
         sty.append(("BACKGROUND", (0, ci), (-1, ci), HEADBG)); ci += 1
         for k in ks:

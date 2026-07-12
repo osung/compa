@@ -189,3 +189,18 @@
 - 이 저장소 밖 폰트/렌더 확인용으로 LibreOffice(headless) 사용 가능: `soffice --headless --convert-to pdf --outdir <dir> <docx>` → 페이지 추출 후 `sips`로 PNG 렌더해 육안 검증. (docx 자체 배포는 하지 않고 검증에만 사용.)
 - 수요 요약(정보표+Top5)도 밀도 상향(정보표 9pt/줄간격 1.28, Top5 8.8pt/줄간격 1.18)해 **near-empty 페이지 0** 달성.
 - 검증(`_verify_report.py`, PASS 45): 과제 상세 overflow 0/390, near-empty 페이지 0, 데이터 정합성·서식·폰트·페이지나누기 전 항목 통과.
+
+## 10. 변경 이력 (2026-07 필터 재매칭 세션)
+
+최근 세션에서 적용한 주요 변경(최신 산출물 `COMPA_필터전체_보고서.pdf`/`.docx`, 정본 `COMPA_통합best.json`):
+
+1. **필터 재매칭(§0)**: 제출년도 ≥2020 ∧ 연구수행주체 {대학·출연연·국공립연·정부부처} 조건으로 78수요 전체 35B 재매칭. 위배 0건, 390건 재선정. (`rematch_filtered.py` → `_build_full_inputs.py`)
+2. **연구책임자 정보 추가(§5-1, §6-4)**: 과제 정보표에 `연구책임자`·`국가연구자번호` 행 추가(소스 `../apollo/public_RnD_PI_260610.pkl`).
+3. **과제 정보표 4열화(§6-4)**: 세로 2열(≤8행) → 4열(라벨|값|라벨|값)로 행 수 절반 축소. 라벨열 폭은 `과학기술표준분류(중)` 한 줄 기준.
+4. **특허 실적 표(§6-5)**: 각 과제에 `▍특허 실적` 표(등록 우선·출원 병기, 다년도 전 연도). 없으면 "특허 실적 없음" 표기. (`_patent_prep.py`)
+5. **PDF 출판물 재현(§9-6)**: reportlab로 docx와 동일 디자인 PDF 직접 생성(Noto Sans/Serif KR static, 로고·배지·표). 배포용 PDF는 이 생성본.
+6. **러닝헤더=현재 수요기술명(§9-3)**: 상세 페이지 상단에 `수요 N`+수요기술명. PDF는 상세 페이지에만(새 수요 intro 페이지는 미표시), docx는 STYLEREF.
+7. **세로 리듬·간격(§9-5)**: 헤더↔제목·제목↔정보표는 좁게, 정보표↔적합성↔상세근거↔특허는 적당히 넓게.
+8. **배지 내어쓰기(§9-3)**: `수요 N`·`TOP N` 뒤 제목의 둘째 줄이 첫 줄 제목 시작과 정확히 정렬(배지+간격 실측폭 헤딩별 계산).
+
+> 스크립트: `rematch_filtered.py`, `_build_full_inputs.py`, `_patent_prep.py`, `gen_report.py`(docx), `gen_report_pdf.py`(PDF), `_rebuild_final.py`, `_fix_projtable_pids.py`. 데이터·산출물(pkl/xlsx/docx/pdf/폰트)은 `.gitignore` 제외.

@@ -331,7 +331,7 @@ python _patent_prep.py         # $COMPA_SCRATCH/pid_patents.json
 - 수요 요약(정보표+Top5)도 밀도 상향(정보표 9pt/줄간격 1.28, Top5 8.8pt/줄간격 1.18)해 **near-empty 페이지 0** 달성.
 - 검증(`_verify_report.py`, PASS 45): 과제 상세 overflow 0/390, near-empty 페이지 0, 데이터 정합성·서식·폰트·페이지나누기 전 항목 통과.
 
-## 10. 변경 이력 (2026-07 필터 재매칭 세션)
+## 10. 변경 이력 (2026-07 필터 재매칭 + 서식·문체 정제 세션)
 
 최근 세션에서 적용한 주요 변경(최신 산출물 `COMPA_필터전체_보고서.pdf`/`.docx`, 정본 `COMPA_통합best.json`):
 
@@ -343,5 +343,14 @@ python _patent_prep.py         # $COMPA_SCRATCH/pid_patents.json
 6. **러닝헤더=현재 수요기술명(§9-3)**: 상세 페이지 상단에 `수요 N`+수요기술명. PDF는 상세 페이지에만(새 수요 intro 페이지는 미표시), docx는 STYLEREF.
 7. **세로 리듬·간격(§9-5)**: 헤더↔제목·제목↔정보표는 좁게, 정보표↔적합성↔상세근거↔특허는 적당히 넓게.
 8. **배지 내어쓰기(§9-3)**: `수요 N`·`TOP N` 뒤 제목의 둘째 줄이 첫 줄 제목 시작과 정확히 정렬(배지+간격 실측폭 헤딩별 계산).
+9. **긍정형 매칭 근거(§4)**: 표 '매칭 근거'(판단근거)를 `compa_match.gen_match_reason`(긍정 few-shot)으로 생성하도록 `match_for` 수정 → 향후 항상 긍정형. 기존 부정 톤 13건은 `_fix_neg_reasons.py`로 교정. 부정 톤 0.
+10. **상세 목차(§9-3)**: 분야(장)별로 그룹핑하고 각 수요기술별 제목+시작 페이지 명시. PDF는 **2-pass**로 페이지 산출(목차↔본문 페이지 전수 일치 검증), docx는 Word **TOC 필드**(레벨1-2). 장별 건수 표기는 제외.
+11. **과제 정보표 8필드 고정(§6-4)**: 항상 `과제고유번호·과제수행기간·과학기술표준분류(중)·연구개발단계·과제수행기관·연구수행주체·연구책임자·국가연구자번호` 순서, 데이터 없으면 `-`(행 생략 금지).
+12. **특허 국가명(§6-5)**: 코드→국가명(`KR→한국·US→미국·CN→중국·JP→일본·EP/XU→유럽·XI/WO→PCT`).
+13. **제목 볼드**: 표지 타이틀·수요기술명(H2)·TOP 과제명(H3) 볼드(Sans-B/`bold=True`).
+14. **문장 띄어쓰기 보정(§4)**: 마침표 뒤 공백 누락 자동 교정 `compa_match.normalize_spacing`(소수점·버전 보존), `gen_explanation`/`gen_match_reason` 항상 적용. 기존분 `_fix_spacing.py`.
+15. **문체=반말(한다체) 통일(§4)**: 상세 매칭 근거를 반말로. 프롬프트에 존댓말 금지어(`합니다`류 포함) 명시. 기존분 `_regen_banmal.py`(+`_fix5/_fix1`) 교체. 존댓말 검출은 `(?<!아)니다`. 존댓말 0.
+16. **메타·회피 문구 제거(§4)**: `유사 사례 및 실적` 등의 `이 섹션은…/생략한다/제공되지 않아…서술할 수 없다` 상투·회피 문장을 기술 연결성 서술로 재생성(`_fix_meta_sections.py`·`_fix_punts.py`·`_fix_punts2.py`·`_fix_usecase.py`). 회피/메타 0.
 
-> 스크립트: `rematch_filtered.py`, `_build_full_inputs.py`, `_patent_prep.py`, `gen_report.py`(docx), `gen_report_pdf.py`(PDF), `_rebuild_final.py`, `_fix_projtable_pids.py`. 데이터·산출물(pkl/xlsx/docx/pdf/폰트)은 `.gitignore` 제외.
+> 검증: **`_final_check.py`**(27항목: 구조·필터·특허·볼드·4열표·부정톤0·존댓말0·pid정합성·무결성) — PASS.
+> 스크립트: `rematch_filtered.py`, `_build_full_inputs.py`, `_patent_prep.py`, `gen_report.py`(docx), `gen_report_pdf.py`(PDF), `_rebuild_final.py`, `_fix_projtable_pids.py`, 교정용 `_fix_*` / `_regen_banmal.py`. 데이터·산출물(pkl/xlsx/docx/pdf/폰트)은 `.gitignore` 제외.

@@ -602,14 +602,17 @@ def build_top_detail(doc, tp, pidf):
     para_border(h3, "bottom", HAIR, 6, 6)
 
     extra = pidf.get(pid, {})
-    info = [("과제고유번호", pid)]
-    if (per := fmt_period(tp.get("과제설명문", ""))): info.append(("과제수행기간", per))
-    if (cls := extract_class(tp.get("과제설명문", ""))): info.append(("과학기술표준분류(중)", cls))
-    if extra.get("연구개발단계"): info.append(("연구개발단계", extra["연구개발단계"]))
-    info.append(("과제수행기관", tp.get("수행기관", "")))
-    if extra.get("연구책임자명"): info.append(("연구책임자", extra["연구책임자명"]))
-    if extra.get("국가연구자번호"): info.append(("국가연구자번호", extra["국가연구자번호"]))
-    if extra.get("연구수행주체"): info.append(("연구수행주체", extra["연구수행주체"]))
+    def _dash(v): v = str(v if v is not None else "").strip(); return v if v else "-"
+    info = [  # 항상 8개 고정 순서, 데이터 없으면 '-'
+        ("과제고유번호", _dash(pid)),
+        ("과제수행기간", _dash(fmt_period(tp.get("과제설명문", "")))),
+        ("과학기술표준분류(중)", _dash(extract_class(tp.get("과제설명문", "")))),
+        ("연구개발단계", _dash(extra.get("연구개발단계"))),
+        ("과제수행기관", _dash(tp.get("수행기관", ""))),
+        ("연구수행주체", _dash(extra.get("연구수행주체"))),
+        ("연구책임자", _dash(extra.get("연구책임자명"))),
+        ("국가연구자번호", _dash(extra.get("국가연구자번호"))),
+    ]
 
     # 4열(라벨|값|라벨|값)로 묶어 행 수를 절반으로 축소
     t = doc.add_table(rows=0, cols=4)

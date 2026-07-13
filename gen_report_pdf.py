@@ -290,14 +290,17 @@ def top_detail(tp, dk_no, dk_name):
                        spaceAfter=3, leftIndent=off, firstLineIndent=-off))  # 배지+간격 실측폭 내어쓰기
     titlep._demand_hdr = (dk_no, dk_name)         # 이 상세 페이지 상단에 수요기술명 헤더 그림
     block = [titlep, mktable([[""]], [CW], [("LINEBELOW", (0, 0), (-1, -1), 0.6, HAIR)]), Spacer(1, 2)]
-    info = [("과제고유번호", pid)]
-    if fmt_period(tp.get("과제설명문", "")): info.append(("과제수행기간", fmt_period(tp.get("과제설명문", ""))))
-    if extract_class(tp.get("과제설명문", "")): info.append(("과학기술표준분류(중)", extract_class(tp.get("과제설명문", ""))))
-    if ex.get("연구개발단계"): info.append(("연구개발단계", ex["연구개발단계"]))
-    info.append(("과제수행기관", tp.get("수행기관", "")))
-    if ex.get("연구책임자명"): info.append(("연구책임자", ex["연구책임자명"]))
-    if ex.get("국가연구자번호"): info.append(("국가연구자번호", ex["국가연구자번호"]))
-    if ex.get("연구수행주체"): info.append(("연구수행주체", ex["연구수행주체"]))
+    def _dash(v): v = str(v if v is not None else "").strip(); return v if v else "-"
+    info = [  # 항상 8개 고정 순서, 데이터 없으면 '-'
+        ("과제고유번호", _dash(pid)),
+        ("과제수행기간", _dash(fmt_period(tp.get("과제설명문", "")))),
+        ("과학기술표준분류(중)", _dash(extract_class(tp.get("과제설명문", "")))),
+        ("연구개발단계", _dash(ex.get("연구개발단계"))),
+        ("과제수행기관", _dash(tp.get("수행기관", ""))),
+        ("연구수행주체", _dash(ex.get("연구수행주체"))),
+        ("연구책임자", _dash(ex.get("연구책임자명"))),
+        ("국가연구자번호", _dash(ex.get("국가연구자번호"))),
+    ]
     LW = 33 * mm; VW = (CW - 2 * LW) / 2
     rows = []
     for i in range(0, len(info), 2):

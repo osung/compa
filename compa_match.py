@@ -697,6 +697,13 @@ def build_demand_payload(demand, proj):
     }
 
 
+# 마침표 뒤 띄어쓰기 누락 보정: 한글/%/닫음부호 뒤 마침표 다음에 공백 삽입(소수점·버전·약어 보존)
+_PERIOD_FIX = re.compile(r"([가-힣%)\]』」’”])\.(?=[^\s.,;:)\]\}%’”」』])")
+def normalize_spacing(s):
+    """'…습니다.이' → '…습니다. 이'. '3.2억원'·'H.264'·'β-1,3' 등은 건드리지 않음."""
+    return _PERIOD_FIX.sub(r"\1. ", s or "")
+
+
 def gen_explanation(demand, proj):
     """4섹션 상세 추천 근거를 생성해 한 셀 텍스트로 반환(temperature=0.2)."""
     msgs = build_messages(build_demand_payload(demand, proj), direction="company")
@@ -704,7 +711,7 @@ def gen_explanation(demand, proj):
                              expected_keys=EX_FMT)
     secs = parse_sections(out, tuple(EX_FMT))
     parts = [f"[{k}] {secs.get(k, '').strip()}" for k in EX_FMT if secs.get(k, "").strip()]
-    return "\n\n".join(parts) if parts else out.strip()
+    return normalize_spacing("\n\n".join(parts) if parts else out.strip())
 
 
 # ---- 표'매칭 근거'(한 줄) — 긍정형 few-shot. llm_score 의 비판적 reason 대신 이걸 LLM판단근거로 사용 ----
@@ -749,7 +756,7 @@ def gen_match_reason(demand, proj):
     out = out.strip().strip('"').strip("'").split("\n")[0].strip()
     if out.startswith("매칭 근거"):
         out = out.split(":", 1)[-1].strip()
-    return out[:120]
+    return normalize_spacing(out[:120])
 
 
 # =====================================================================

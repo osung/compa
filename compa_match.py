@@ -470,6 +470,32 @@ DESC_OUT = 30000       # 엑셀 셀 길이 한계(32767) 회피용 출력 설명
 SEP = ";"              # 키워드 join 구분자
 
 
+# 과제명 꼬리의 차수 표기(로마숫자/N차/제N차/N단계) — 연차 후속과제 판별용
+# casefold() 가 U+2160~ 대문자 로마숫자를 U+2170~ 소문자형으로 바꾸므로 둘 다 포함
+_PHASE_TAIL = re.compile(
+    r"(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅰⅱⅲⅳⅴⅵⅶⅷⅸⅹ]+|\(?\s*제?\d+\s*(?:차|단계)\s*\)?)\s*$")
+
+
+def title_key(name, phase_aware=False):
+    """Top-N 중복 판정 키(과제명 기준).
+
+    기본은 과제명 정확일치(공백 제거·소문자화).
+    phase_aware=True 면 과제명 꼬리의 차수 표기를 벗겨 같은 사업의 연차 후속과제
+    (예: '…운영Ⅵ'/'…운영Ⅶ')를 한 건으로 본다.
+
+    ※ 수행기관은 키에 넣지 않는다 — 같은 과제가 '한림대산학협력단'/'한림대학교'처럼
+      기관 표기만 다르게 중복 등재되는 경우가 있어, 기관을 넣으면 오히려 중복이 통과한다.
+    """
+    if not phase_aware:
+        return str(name).strip().casefold()    # 기존 동작 그대로(기본값)
+    s = re.sub(r"\s+", "", str(name)).casefold()
+    prev = None
+    while prev != s:                      # 'Ⅶ', '3차' 가 겹쳐 붙은 경우까지 제거
+        prev = s
+        s = _PHASE_TAIL.sub("", s)
+    return s
+
+
 def norm_name(s):
     """기업명 정규화 — 법인격 표기/공백 제거 후 소문자화."""
     s = re.sub(r"\(주\)|\(株\)|㈜|주식회사|\(유\)|유한회사|\(재\)|재단법인|"
@@ -1260,9 +1286,11 @@ def match_for(assignee, records, kw_ckpt, corpus, encode, args):
         scored.sort(key=lambda x: (-x[0], -x[1]))
 
         # 과제명 중복 제거: 동일 과제명은 점수 높은(먼저 오는) 것만 남기고 final 개까지 선정
+        # (args.dedupe_phase 면 같은 기관의 연차 후속과제 'ⅥㆍⅦ' 등도 한 건으로 묶음)
+        _pa = getattr(args, "dedupe_phase", False)
         seen_titles, selected = set(), []
         for tup in scored:
-            tkey = str(pname[tup[3]]).strip().casefold()
+            tkey = title_key(pname[tup[3]], _pa)
             if tkey in seen_titles:
                 continue
             seen_titles.add(tkey)

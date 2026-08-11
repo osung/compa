@@ -374,8 +374,14 @@ def top_detail(tp, dk_no, dk_name):
     story.append(PageBreak())
 
 # ---- 조립 ----
+def _key_num(k):
+    """수요 키 정렬용. 숫자 키가 기본이지만 '2026-33'(관리번호) 처럼 비숫자 키도 받는다."""
+    m = re.search(r"(\d+)\s*$", str(k))
+    return (0, int(k)) if str(k).isdigit() else (1, int(m.group(1)) if m else 0)
+
+
 by_field = {f: [] for f in FIELD_ORDER}
-for k in sorted(demands, key=int):
+for k in sorted(demands, key=_key_num):
     by_field.setdefault(field6t.get(k, "융합"), []).append(k)
 
 def assemble():

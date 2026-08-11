@@ -28,9 +28,13 @@ def ymd(v):
         return f"{y}.{m}" if d == "00" else f"{y}.{m}.{d}"  # 일자 미상이면 연.월
     return s(v)
 
-# 매칭 pid
-jb = json.load(open("COMPA_통합best.json"))
-pids = {str(t["과제고유번호"]) for e in jb.values() for t in e["top5"]}
+# 매칭 pid — 보고서 입력 JSON 기준(gen_report 와 같은 환경변수를 쓴다)
+BEST = os.environ.get("COMPA_REPORT_JSON", "COMPA_통합best.json")
+jb = json.load(open(BEST, encoding="utf-8"))
+# Top5(기존) / Top10(수요+기보유 매칭) 스키마 양쪽 지원
+pids = {str(t["과제고유번호"]) for e in jb.values()
+        for t in (e.get("top5") or e.get("top10") or [])}
+print(f"입력: {BEST} | 대상 pid {len(pids)}건")
 
 p = pd.read_pickle(PF)
 p["과제고유번호"] = p["과제고유번호"].astype(str)

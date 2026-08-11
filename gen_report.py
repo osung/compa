@@ -54,6 +54,10 @@ D_LS   = 1.1      # 상세근거 줄간격
 SEC_AFTER = 2     # 섹션 간격(pt)
 MARGIN_TB, MARGIN_LR = 0.7, 0.9  # inch
 
+# 과제 상세 정보표에서 제외할 항목 라벨(데이터 원본이 없는 환경에서 '-' 만 찍히는 항목 숨김용).
+# 기본은 비어 있어 8개 항목을 모두 싣는다. 보고서 스크립트가 필요 시 채운다.
+OMIT_INFO_FIELDS = set()
+
 FIELD_TITLE = {"BT": "바이오기술 (BT) 분야", "IT": "정보기술 (IT) 분야",
                "NT": "나노기술 (NT) 분야", "ET": "환경기술 (ET) 분야", "융합": "융합기술 분야"}
 FIELD_EN = {"BT": "BIOTECHNOLOGY", "IT": "INFORMATION TECHNOLOGY", "NT": "NANOTECHNOLOGY",
@@ -534,7 +538,8 @@ def build_chapter(doc, no, f, ks, demands, pidf, first=False):
         build_demand(doc, k, demands[k], pidf)
 
 # ---- 수요 블록 --------------------------------------------------------------
-def build_demand(doc, k, dm, pidf):
+def build_demand(doc, k, dm, pidf, title=None):
+    """title 미지정이면 수요기술명을 제목으로(기본). 제목은 Word 목차·러닝헤더에 반영된다."""
     h2 = doc.add_heading(level=2)
     h2.paragraph_format.page_break_before = True
     h2.paragraph_format.space_before = Pt(0); h2.paragraph_format.space_after = Pt(5)
@@ -544,7 +549,7 @@ def build_demand(doc, k, dm, pidf):
     badge = h2.add_run(f" 수요 {k} ")
     style_run(badge, 12, bold=True, color="FFFFFF"); run_shade(badge, ACCENT)
     style_run(h2.add_run("  "), 12)
-    style_run(h2.add_run(dm["수요기술명"]), 14, bold=True, color=NAVY)
+    style_run(h2.add_run(title or dm["수요기술명"]), 14, bold=True, color=NAVY)
     para_border(h2, "bottom", HAIR, 6, 6)
 
     # 수요 정보 표
@@ -603,16 +608,18 @@ def build_top_detail(doc, tp, pidf):
 
     extra = pidf.get(pid, {})
     def _dash(v): v = str(v if v is not None else "").strip(); return v if v else "-"
-    info = [  # 항상 8개 고정 순서, 데이터 없으면 '-'
+    info = [  # 고정 순서, 데이터 없으면 '-' (OMIT_INFO_FIELDS 에 든 라벨은 표에서 제외)
         ("과제고유번호", _dash(pid)),
         ("과제수행기간", _dash(fmt_period(tp.get("과제설명문", "")))),
-        ("과학기술표준분류(중)", _dash(extract_class(tp.get("과제설명문", "")))),
+        # 설명문 파싱이 실패하면 pid_fields 의 표준분류중으로 보완(설명문 문구가 제각각이라 종종 실패)
+        ("과학기술표준분류(중)", _dash(extract_class(tp.get("과제설명문", "")) or extra.get("표준분류중"))),
         ("연구개발단계", _dash(extra.get("연구개발단계"))),
         ("과제수행기관", _dash(tp.get("수행기관", ""))),
         ("연구수행주체", _dash(extra.get("연구수행주체"))),
         ("연구책임자", _dash(extra.get("연구책임자명"))),
         ("국가연구자번호", _dash(extra.get("국가연구자번호"))),
     ]
+    info = [x for x in info if x[0] not in OMIT_INFO_FIELDS]
 
     # 4열(라벨|값|라벨|값)로 묶어 행 수를 절반으로 축소
     t = doc.add_table(rows=0, cols=4)

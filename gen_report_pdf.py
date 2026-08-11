@@ -18,13 +18,26 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRATCH = os.environ.get("COMPA_SCRATCH",
     "/private/tmp/claude-501/-Users-osung-work-compa/d6ed121c-12e4-45b4-b2fb-535b7554627c/scratchpad")
 OUT = os.environ.get("COMPA_PDF_OUT", os.path.join(HERE, "COMPA_필터전체_보고서.pdf"))
-FDIR = os.path.join(SCRATCH, "fonts")
+FDIR = os.environ.get("COMPA_FONT_DIR", os.path.join(SCRATCH, "fonts"))
 LOGO = os.path.join(SCRATCH, "apollo_top.png")
 
 # ---- 폰트 (Noto Sans/Serif KR, Regular+Bold) ----
-for nm, fn in [("Sans", "NotoSansKR-Regular.ttf"), ("Sans-B", "NotoSansKR-Bold.ttf"),
-               ("Serif", "NotoSerifKR-Regular.ttf"), ("Serif-B", "NotoSerifKR-Bold.ttf")]:
-    pdfmetrics.registerFont(TTFont(nm, os.path.join(FDIR, fn)))
+# Noto 가 없으면 시스템 한글 폰트로 대체(조판은 유지되나 서체·굵기 대비는 떨어짐).
+_FONTS = [("Sans", "NotoSansKR-Regular.ttf"), ("Sans-B", "NotoSansKR-Bold.ttf"),
+          ("Serif", "NotoSerifKR-Regular.ttf"), ("Serif-B", "NotoSerifKR-Bold.ttf")]
+_FALLBACK = next((p for p in ("/Library/Fonts/Arial Unicode.ttf",
+                              "/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
+                  if os.path.exists(p)), None)
+if all(os.path.exists(os.path.join(FDIR, fn)) for _, fn in _FONTS):
+    for nm, fn in _FONTS:
+        pdfmetrics.registerFont(TTFont(nm, os.path.join(FDIR, fn)))
+elif _FALLBACK:
+    print(f"! Noto KR 폰트 없음({FDIR}) → 대체 폰트 사용: {_FALLBACK}\n"
+          f"  정식 조판은 NotoSansKR/NotoSerifKR Regular·Bold 4종을 {FDIR} 에 두고 재실행하세요.")
+    for nm, _ in _FONTS:
+        pdfmetrics.registerFont(TTFont(nm, _FALLBACK))
+else:
+    raise SystemExit(f"한글 폰트를 찾을 수 없습니다. NotoSansKR/NotoSerifKR 4종을 {FDIR} 에 두세요.")
 
 def F(family, bold):
     return ("Sans-B" if bold else "Sans") if family == "Sans" else ("Serif-B" if bold else "Serif")
@@ -34,6 +47,11 @@ INK = colors.HexColor("#1B2430"); NAVY = colors.HexColor("#14315C"); BLUE = colo
 ACCENT = colors.HexColor("#0E7C86"); MUTED = colors.HexColor("#6B7683"); HAIR = colors.HexColor("#C9D2DE")
 HEADBG = colors.HexColor("#14315C"); HEADFG = colors.white; LABELBG = colors.HexColor("#EAF0F7")
 ZEBRA = colors.HexColor("#F5F8FC"); DISCBG = colors.HexColor("#FBEEED"); DISCBD = colors.HexColor("#C0392B")
+
+# 과제 상세 정보표에서 제외할 항목 라벨(gen_report.OMIT_INFO_FIELDS 와 같은 역할, 기본 비어 있음)
+OMIT_INFO_FIELDS = set()
+# 상세(TOP) 페이지 상단 배지 문구. 수요 단위가 아닌 판형(기업 단위 등)에서는 교체한다.
+DEMAND_TAG_FMT = "수요 {no}"
 
 FIELD_ORDER = ["BT", "IT", "NT", "ET", "융합"]
 FIELD_TITLE = {"BT": "바이오기술 (BT) 분야", "IT": "정보기술 (IT) 분야", "NT": "나노기술 (NT) 분야",
@@ -56,7 +74,8 @@ def P(txt, size=9, color=INK, align=TA_LEFT, leading=None, bold=False, family="S
 # ---- 데이터 ----
 demands = json.load(open(os.environ.get("COMPA_REPORT_JSON", os.path.join(HERE, "COMPA_통합best.json")), encoding="utf-8"))
 pidf = json.load(open(os.path.join(SCRATCH, "pid_fields.json"), encoding="utf-8"))
-field6t = json.load(open(os.path.join(SCRATCH, "demand_field.json"), encoding="utf-8"))
+_f6 = os.path.join(SCRATCH, "demand_field.json")     # 6T 분류(없으면 장 구분 없이 단일 그룹)
+field6t = json.load(open(_f6, encoding="utf-8")) if os.path.exists(_f6) else {}
 _pp = os.path.join(SCRATCH, "pid_patents.json")
 patents = json.load(open(_pp, encoding="utf-8")) if os.path.exists(_pp) else {}
 
@@ -118,7 +137,7 @@ class Doc(BaseDocTemplate):
     def _draw_demand_header(self, c, hdr):
         no, name = hdr; ytop = HDR_Y
         c.saveState()
-        tag = f"수요 {no}"
+        tag = DEMAND_TAG_FMT.format(no=no)
         c.setFont("Sans-B", 7.5); tw = c.stringWidth(tag, "Sans-B", 7.5); pad = 4
         c.setFillColor(ACCENT); c.roundRect(LM, ytop + 2.5, tw + 2 * pad, 11.5, 2.2, fill=1, stroke=0)
         c.setFillColor(colors.white); c.drawString(LM + pad, ytop + 5.5, tag)
@@ -249,9 +268,10 @@ def chapter(no, f, ks):
     for k in ks:
         demand_block(k, demands[k])
 
-def demand_block(k, dm):
+def demand_block(k, dm, title=None):
+    """title 미지정이면 수요기술명을 제목으로(기본)."""
     badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="#0E7C86"> 수요 {esc(k)} </font>'
-             f'  <font name="Sans-B" color="#14315C" size="14">{esc(dm["수요기술명"])}</font>')
+             f'  <font name="Sans-B" color="#14315C" size="14">{esc(title or dm["수요기술명"])}</font>')
     off = pdfmetrics.stringWidth(f" 수요 {k} ", "Sans-B", 14) + pdfmetrics.stringWidth("  ", "Sans-B", 14)
     h2p = Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20,
                     spaceAfter=5, leftIndent=off, firstLineIndent=-off))  # 배지+간격 실측폭 내어쓰기
@@ -294,13 +314,15 @@ def top_detail(tp, dk_no, dk_name):
     info = [  # 항상 8개 고정 순서, 데이터 없으면 '-'
         ("과제고유번호", _dash(pid)),
         ("과제수행기간", _dash(fmt_period(tp.get("과제설명문", "")))),
-        ("과학기술표준분류(중)", _dash(extract_class(tp.get("과제설명문", "")))),
+        # 설명문 파싱 실패 시 pid_fields 의 표준분류중으로 보완(gen_report 와 동일)
+        ("과학기술표준분류(중)", _dash(extract_class(tp.get("과제설명문", "")) or ex.get("표준분류중"))),
         ("연구개발단계", _dash(ex.get("연구개발단계"))),
         ("과제수행기관", _dash(tp.get("수행기관", ""))),
         ("연구수행주체", _dash(ex.get("연구수행주체"))),
         ("연구책임자", _dash(ex.get("연구책임자명"))),
         ("국가연구자번호", _dash(ex.get("국가연구자번호"))),
     ]
+    info = [x for x in info if x[0] not in OMIT_INFO_FIELDS]
     LW = 33 * mm; VW = (CW - 2 * LW) / 2
     rows = []
     for i in range(0, len(info), 2):
@@ -368,14 +390,21 @@ def assemble():
         chapter(no, f, by_field[f])
     return list(story)
 
-# --- pass 1: 페이지 번호 산출(목차는 placeholder) ---
-import io
-d1 = Doc(io.BytesIO()); d1.build(assemble())
-bs = d1.body_start or (COVER_PAGES + 1)
-PAGE_MAP.update({k: v - bs + 1 for k, v in d1.toc_pages.items()})
-CHAP_PAGE.update({c: v - bs + 1 for c, v in d1.chap_pages.items()})
-COVER_PAGES = bs - 1                              # 본문 페이지번호(footer) 기준 보정
+def main(out=None):
+    """2패스 빌드: 1패스로 페이지 번호 산출 → 2패스에서 목차를 채워 출력."""
+    global COVER_PAGES
+    import io
+    d1 = Doc(io.BytesIO()); d1.build(assemble())
+    bs = d1.body_start or (COVER_PAGES + 1)
+    PAGE_MAP.update({k: v - bs + 1 for k, v in d1.toc_pages.items()})
+    CHAP_PAGE.update({c: v - bs + 1 for c, v in d1.chap_pages.items()})
+    COVER_PAGES = bs - 1                          # 본문 페이지번호(footer) 기준 보정
 
-# --- pass 2: 실제 페이지 번호로 목차 채워 최종 출력 ---
-Doc(OUT).build(assemble())
-print("saved:", OUT, "| 목차 수요", len(PAGE_MAP), "장", len(CHAP_PAGE))
+    path = out or OUT
+    Doc(path).build(assemble())
+    print("saved:", path, "| 목차 수요", len(PAGE_MAP), "장", len(CHAP_PAGE))
+    return path
+
+
+if __name__ == "__main__":
+    main()

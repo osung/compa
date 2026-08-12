@@ -36,6 +36,11 @@ OUT = os.environ.get("MEDITEK_TOP10_PDF_OUT",
                      os.path.join(HERE, "MEDITEK_기업기술_국가RnD_매칭보고서.pdf"))
 
 
+def npat(tp):
+    """표에 싣는 특허 건수 — 상세 페이지의 특허 실적 목록과 같은 소스에서 센다."""
+    return len(gp.patents.get(str(tp["과제고유번호"]), []))
+
+
 def _counts(d):
     n_rec = sum(len(v["top10"]) for v in d.values())
     n_proj = len({t["과제고유번호"] for v in d.values() for t in v["top10"]})
@@ -190,9 +195,8 @@ def company_block(k, dm):
                      P(tp["과제명"], 8.4, leading=10.6),
                      P(tp.get("수행기관", ""), 8.2, INK, TA_CENTER),
                      P(gp.year_cell(tp.get("과제설명문", "")), 8.2, INK, TA_CENTER),
-                     P(f"{tp['특허건수']}건", 8.2,
-                       NAVY if tp["특허건수"] else MUTED, TA_CENTER,
-                       bold=bool(tp["특허건수"])),
+                     P(f"{npat(tp)}건", 8.2, NAVY if npat(tp) else MUTED, TA_CENTER,
+                       bold=bool(npat(tp))),
                      P(tp.get("판단근거", ""), 8.2, INK, TA_JUSTIFY, family="Serif",
                        leading=10.6)])
     st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)])

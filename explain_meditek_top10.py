@@ -15,7 +15,10 @@ match_meditek_top10.py 는 순위 선정까지만 하므로(적합도·우수성
 payload 에서 각각 company.수요기술_* / company.description 으로 분리해 넣는다
 (둘을 섞으면 '이미 보유했다'는 서술 오류가 난다).
 
-사용: python explain_meditek_top10.py [--tag MEDITEK] [--only 3,7] [--limit 0]
+특허 실적은 _patent_prep_nice.py 가 만든 pid_patents.json(= 보고서에 싣는 것과 같은 소스)을
+쓰고, 유망성 점수는 프롬프트·산출 어디에도 넣지 않는다(assert_no_promise 로 매번 검사).
+
+사용: COMPA_SCRATCH=<scratch> python explain_meditek_top10.py [--tag MEDITEK] [--only 3,7]
 산출: MEDITEK_TOP10_보고서.json (+ top10_<tag>_{explain,reason}_ckpt.json)
 """
 import argparse
@@ -39,8 +42,10 @@ RETRY = 2                  # 금지 표현(매칭 기준 노출)이 섞였을 �
 EX_FMT = ["연관성", "기술 적합성", "추천 과제의 우수성", "유사 사례 및 실적"]
 
 _G_COMMON = {
-    "추천 과제의 우수성": (cm._EX_GUIDE["추천 과제의 우수성"]
-                   + ". 특허·논문 건수와 상위비율이 주어지면 그 수치가 뜻하는 강점을 함께 서술"),
+    # 유망성 점수는 제공하지 않으므로 근거로 삼지 않는다(점수·등급 언급 금지).
+    "추천 과제의 우수성": ("과제의 연구성과(논문·특허)·수행기관 역량·연구 규모 등 추천 과제의 강점. "
+                   "특허·논문 건수와 상위비율이 주어지면 그 수치가 뜻하는 강점을 함께 서술하되, "
+                   "주어지지 않은 점수·등급·유망성 수치는 언급하지 말 것"),
     "유사 사례 및 실적": cm._EX_GUIDE["유사 사례 및 실적"],
 }
 _G_RELATION = ("company.description(이 기업이 '이미 보유한' 기술·사업내용)과 company.수요기술명·"
@@ -121,6 +126,26 @@ def polish(s):
     return cm.normalize_spacing(s)
 
 
+# ---- 유망성 점수 차단 --------------------------------------------------------
+# 유망성 점수는 프롬프트에도 보고서에도 들어가면 안 된다. payload 를 만들 때마다 검사한다.
+_PROMISE_KEY = re.compile(r"유망|promise|project_score", re.I)
+
+
+def assert_no_promise(obj, where="payload"):
+    """dict/list 를 훑어 유망성 관련 키가 값(숫자·문자)을 갖고 있으면 중단."""
+    def walk(o, path):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if _PROMISE_KEY.search(str(k)) and v not in ("", None, [], {}):
+                    raise SystemExit(f"[중단] {where}: 유망성 정보 유입 {path}/{k} = {v!r}")
+                walk(v, f"{path}/{k}")
+        elif isinstance(o, (list, tuple)):
+            for i, v in enumerate(o):
+                walk(v, f"{path}[{i}]")
+    walk(obj, "")
+    return obj
+
+
 def hold_body(unit):
     """기보유기술 합본에서 [기술명] 섹션을 뺀 본문(기술명은 별도 필드로 넣는다)."""
     return mt._HOLD_NAME_SEC.sub("", unit["기보유기술 내용"]).strip()
@@ -146,6 +171,7 @@ def payload_for(unit, kws, proj):
         p["company"]["보유기술명"] = unit["기보유기술명"]
         p["company"]["보유기술_구분"] = " / ".join(
             x for x in (unit["기술유형"], unit["기술분야"]) if x)
+    p["project"]["project_score"] = ""            # 유망성 점수 미제공
     p["output_requirements"].update({
         "format": EX_FMT,
         "section_guide": {k: guide[k] for k in EX_FMT},
@@ -154,7 +180,7 @@ def payload_for(unit, kws, proj):
                   "수요 충족", "수요 요구"],
         "기업_기술_지칭": "당사 기술 / 이 기업의 기술 / <기업명>의 기술",
     })
-    return p, EX_FMT
+    return assert_no_promise(p, "상세근거 프롬프트"), EX_FMT
 
 
 def gen_detail(unit, kws, proj, retry=RETRY):
@@ -252,6 +278,10 @@ def main():
     ap.add_argument("--src", default=TOP10_PKL)
     ap.add_argument("--tag", default="MEDITEK")
     ap.add_argument("--out", default=OUT_JSON)
+    ap.add_argument("--patents",
+                    default=os.path.join(os.environ.get("COMPA_SCRATCH", "."),
+                                         "pid_patents.json"),
+                    help="특허 실적 JSON(_patent_prep_nice.py 산출)")
     ap.add_argument("--only", default="", help="처리할 번호/관리번호(쉼표 구분)")
     ap.add_argument("--limit", type=int, default=0, help="처리 기업 수 제한(0=전체)")
     ap.add_argument("--no-llm", action="store_true",
@@ -272,10 +302,17 @@ def main():
     rs = json.load(open(rs_path, encoding="utf-8")) if os.path.exists(rs_path) else {}
     log(f"체크포인트: 상세근거 {len(ex)}건 · 매칭근거 {len(rs)}건")
 
-    # 과제 메타(논문·특허 실적) — 상세근거 프롬프트의 우수성/실적 근거
+    # 과제 메타(논문 실적·상위비율) — 상세근거 프롬프트의 우수성/실적 근거
     import pickle
     with open(cm.PROJECT_META, "rb") as f:
         pmeta = pickle.load(f)
+    # 특허 실적은 보고서에 싣는 것과 같은 소스를 쓴다(_patent_prep_nice.py 산출)
+    if not os.path.exists(a.patents):
+        raise SystemExit(f"없는 파일: {a.patents} — 먼저 `python _patent_prep_nice.py` 실행 필요")
+    patents = json.load(open(a.patents, encoding="utf-8"))
+    assert_no_promise(patents, "특허 데이터")
+    log(f"특허 실적 로드: {a.patents} · 과제 {len(patents)}건 · "
+        f"특허 {sum(len(v) for v in patents.values())}건")
 
     todo = [u for u in units if u["키"] in set(df["기업명"].map(cm.norm_name))]
     if a.only:
@@ -301,16 +338,18 @@ def main():
             pid = str(r["과제고유번호"])
             ck = f"{key}::{pid}"
             meta = pmeta.get(pid, {}) if isinstance(pmeta, dict) else {}
+            pats = patents.get(pid, [])           # 특허 실적: 새 특허 데이터 기준
             proj = {
                 "pid": pid, "과제명": r["과제명"], "설명": r["과제설명문"],
-                "유망성": round(float(r["유망성점수"]), 1), "수행기관": r["과제수행기관"],
+                # 유망성 점수는 넣지 않는다(build_demand_payload 의 project_score 가 빈 값이 된다)
+                "수행기관": r["과제수행기관"],
                 "키워드": [], "논문명": meta.get("논문명_리스트") or [],
-                "특허명": meta.get("특허명_리스트") or [],
-                "논문건수": int(r["논문건수"]), "특허건수": int(r["특허건수"]),
+                "특허명": [x["특허명"] for x in pats],
+                "논문건수": int(r["논문건수"]), "특허건수": len(pats),
                 "총연구비_상위비율": meta.get("총연구비_상위비율"),
                 "논문건수_상위비율": meta.get("논문건수_상위비율"),
-                "특허건수_상위비율": meta.get("특허건수_상위비율"),
             }
+            assert_no_promise(proj)
             if not a.no_llm and ck not in ex:
                 ex[ck] = gen_detail(u, kws, proj)[:cm.DESC_OUT]
                 json.dump(ex, open(ex_path, "w", encoding="utf-8"), ensure_ascii=False)
@@ -323,8 +362,9 @@ def main():
                 "수행기관": r["과제수행기관"],
                 "적합도": int(r["적합도"]), "수요충족": int(r["수요충족"]),
                 "보유보강": int(r["보유보강"]), "최종점수": float(r["최종점수"]),
-                "특허건수": int(r["특허건수"]), "논문건수": int(r["논문건수"]),
-                "유망성점수": float(r["유망성점수"]), "순위구분": r["순위구분"],
+                # 특허건수는 보고서에 싣는 특허 실적(새 특허 데이터)과 같은 값이어야 한다
+                "특허건수": len(pats), "논문건수": int(r["논문건수"]),
+                "순위구분": r["순위구분"],          # 유망성 점수는 싣지 않는다
                 # 표에는 긍정형 한 문장, 없으면 채점 단계 근거로 폴백
                 "판단근거": polish(rs.get(ck) or r["LLM근거"]),
                 "과제설명문": r["과제설명문"],
@@ -343,6 +383,9 @@ def main():
             f"[{n}/{len(todo)}] {el/60:.1f}분 경과"
             + (f" · 남은 예상 {el/done*(need-done)/60:.0f}분" if done and not a.no_llm else ""))
 
+    assert_no_promise(best, "보고서 JSON")
+    if re.search(r"유망성\s*(점수|지수)|유망성\s*[:：]?\s*\d", json.dumps(best, ensure_ascii=False)):
+        raise SystemExit("[중단] 보고서 JSON 본문에 유망성 점수 표현이 있습니다")
     if os.path.exists(a.out):
         os.replace(a.out, a.out + ".bak")
     json.dump(best, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)

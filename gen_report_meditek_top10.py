@@ -56,7 +56,7 @@ CORPUS_NOTE = ("매칭 대상 과제는 연구수행주체가 대학·출연연�
 METHOD_NOTE = ("매칭은 기업이 제출한 기술 정보에서 핵심 기술 키워드를 추출하고, 그 키워드로 "
                "과제 임베딩과의 의미 유사도가 높은 후보를 선별한 뒤, 각 후보가 해당 기업의 "
                "기술과 실질적으로 부합·기여하는 정도를 평가하는 방식으로 수행하였다. "
-               "최종 순위는 이 적합도에 과제의 우수성(특허 성과를 중심으로 논문 성과·유망성)을 "
+               "최종 순위는 이 적합도에 과제의 연구성과(특허 성과를 중심으로 논문 성과)를 "
                "함께 반영해 결정하였다.")
 
 # 근거 텍스트의 섹션 제목 통일 — 매칭 기준이 드러나는 제목을 렌더링 단계에서 바꾼다
@@ -72,6 +72,11 @@ def neutralize(tp):
     for old, new in SECTION_RENAME.items():
         txt = txt.replace(f"[{old}]", f"[{new}]")
     return dict(tp, 추천근거_상세=txt)
+
+
+def patent_count(tp):
+    """표에 싣는 특허 건수 — 상세 페이지의 특허 실적 목록과 같은 소스에서 센다."""
+    return len(gr.PATENTS.get(str(tp["과제고유번호"]), []))
 
 
 def tech_names(dm):
@@ -138,6 +143,11 @@ def preflight(demands, pidf):
     """정보표·근거·특허가 통째로 비는 사고 방지(보고서는 값이 없으면 조용히 '-' 로 찍힌다)."""
     tops = [t for v in demands.values() for t in v["top10"]]
     pids = sorted({t["과제고유번호"] for t in tops})
+    # 유망성 점수 비노출 점검 — 입력 JSON·특허 데이터 어디에도 남아 있으면 안 된다
+    leak = [k for t in tops for k in t if "유망" in k]
+    leak += [k for lst in gr.PATENTS.values() for x in lst for k in x if "유망" in k]
+    if leak:
+        raise SystemExit(f"[preflight] 유망성 정보가 보고서 입력에 남아 있습니다: {set(leak)}")
     if not (set(pids) & set(pidf)):
         raise SystemExit("[preflight] pid_fields 에서 과제를 하나도 찾지 못했습니다 — "
                          "구조가 {pid: {...}} 인지 확인(‘fields’ 로 감싸져 있으면 벗겨야 함).")
@@ -325,8 +335,9 @@ def build_company(doc, k, dm, pidf):
         fill_cell(cells[2], tp.get("수행기관", ""), 8.4, align=WD_ALIGN_PARAGRAPH.CENTER)
         fill_cell(cells[3], "\n".join(year_lines(tp.get("과제설명문", ""))), 8.4,
                   align=WD_ALIGN_PARAGRAPH.CENTER)
-        fill_cell(cells[4], f"{tp['특허건수']}건", 8.4, align=WD_ALIGN_PARAGRAPH.CENTER,
-                  bold=tp["특허건수"] > 0, color=NAVY if tp["특허건수"] > 0 else MUTED)
+        npat = patent_count(tp)
+        fill_cell(cells[4], f"{npat}건", 8.4, align=WD_ALIGN_PARAGRAPH.CENTER,
+                  bold=npat > 0, color=NAVY if npat > 0 else MUTED)
         fill_cell(cells[5], tp.get("판단근거", ""), 8.4,
                   align=WD_ALIGN_PARAGRAPH.JUSTIFY, family=SERIF, line=1.16)
         for c in cells:

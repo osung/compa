@@ -5,8 +5,10 @@ match_meditek_top10.py 는 순위 선정까지만 하므로(적합도·우수성
 여기서 35B 로 생성한다. 텍스트는 모두 모델이 쓰고, 이 스크립트는 프롬프트 구성과
 체크포인트 관리만 한다.
 
-  · 추천근거_상세 : 4섹션. 기업이 '보유한' 기술이 있으면 사양 적합성 대신
-                   '기보유기술 보강 가능성' 섹션을 쓴다(MEDITEK 원본에 수요기술 사양이 없음).
+  · 추천근거_상세 : 4섹션(연관성 · 기술 적합성 · 추천 과제의 우수성 · 유사 사례 및 실적).
+                   보유기술이 있으면 '기술 적합성'을 보강·고도화 관점으로, 없으면 수요 충족
+                   관점으로 쓰게 가이드만 바꾼다 — 섹션 제목은 같게 두어 보고서에 매칭 기준
+                   (수요기술/기보유기술)이 드러나지 않게 한다.
   · 판단근거     : 표에 싣는 긍정형 한 문장(적합도 채점 단계의 비판적 reason 을 쓰지 않는다).
 
 수요기술은 기업이 확보하려는(미보유) 기술, 기보유기술은 이미 보유한 역량이므로
@@ -29,33 +31,69 @@ import match_meditek_top10 as mt
 
 TOP10_PKL = "MEDITEK_TOP10.pkl"
 OUT_JSON = "MEDITEK_TOP10_보고서.json"
+RETRY = 2                  # 금지 표현(매칭 기준 노출)이 섞였을 때 재생성 횟수
 
 # ---- 상세 근거 섹션 구성 ----------------------------------------------------
-EX_DEM = ["연관성", "수요 충족 가능성", "추천 과제의 우수성", "유사 사례 및 실적"]
-EX_HOLD = ["연관성", "기보유기술 보강 가능성", "추천 과제의 우수성", "유사 사례 및 실적"]
+# 섹션 제목은 두 경우 모두 동일하게 둔다 — 보고서에 '수요기술/기보유기술' 중 무엇을
+# 기준으로 매칭했는지가 드러나지 않아야 한다(관점 차이는 가이드 문구로만 준다).
+EX_FMT = ["연관성", "기술 적합성", "추천 과제의 우수성", "유사 사례 및 실적"]
 
-_GUIDE = {
-    "연관성": ("company.description(이 기업이 '이미 보유한' 기술·사업내용)과 company.수요기술명·"
-            "수요기술_내용(이 기업이 '확보하려는', 아직 보유하지 않은 기술)을 구분해 읽고, "
-            "이 기업의 기술적 위치에 비추어 과제의 목표·내용이 어떤 지점에서 맞닿는지 설명. "
-            "수요기술을 기업이 이미 보유한 역량으로 서술하지 말 것. 반대로 description 에 있는 "
-            "보유기술은 기업이 실제로 가진 것으로 서술해도 된다. 둘 중 한쪽이 비어 있으면 "
-            "있는 쪽만 근거로 쓰고 없는 역량을 임의로 가정하지 말 것"),
-    "수요 충족 가능성": ("과제가 company.수요기술_내용의 요구를 어떤 방식으로 충족·해결할 수 있는지, "
-                  "과제의 기술 요소와 수요 항목을 대응시켜 구체적으로 설명. 완전히 일치하지 "
-                  "않는 항목은 어느 범위까지 기여할 수 있는지로 서술"),
-    "기보유기술 보강 가능성": ("과제의 기술이 company.description 의 보유기술을 어떻게 보강·고도화하거나 "
-                     "새로운 응용으로 확장할 수 있는지 설명. 보유기술의 어느 구성요소(소재·공정·"
-                     "알고리즘·계측 등)에 결합되는지, 그 결합이 성능·적용범위·신뢰성 측면에서 "
-                     "무엇을 개선하는지 인과적으로 서술"),
+_G_COMMON = {
     "추천 과제의 우수성": (cm._EX_GUIDE["추천 과제의 우수성"]
                    + ". 특허·논문 건수와 상위비율이 주어지면 그 수치가 뜻하는 강점을 함께 서술"),
     "유사 사례 및 실적": cm._EX_GUIDE["유사 사례 및 실적"],
 }
+_G_RELATION = ("company.description(이 기업이 '이미 보유한' 기술·사업내용)과 company.수요기술명·"
+               "수요기술_내용(이 기업이 '확보하려는', 아직 보유하지 않은 기술)을 구분해 읽고, "
+               "이 기업의 기술적 위치에 비추어 과제의 목표·내용이 어떤 지점에서 맞닿는지 설명. "
+               "수요기술을 기업이 이미 보유한 역량으로 서술하지 말 것. 반대로 description 에 있는 "
+               "보유기술은 기업이 실제로 가진 것으로 서술해도 된다. 둘 중 한쪽이 비어 있으면 "
+               "있는 쪽만 근거로 쓰고 없는 역량을 임의로 가정하지 말 것")
 
-# 표용 한 문장 근거: 보유기술 보강 접점도 허용(원 프롬프트는 수요 충족 관점만 전제)
-_MR_EXTRA = ("\n6) 기업이 '이미 보유한 기술'이 함께 주어지면, 과제가 그 보유기술을 보강·고도화·"
-             "확장하는 접점도 매칭 근거로 쓸 수 있다(예: '~ 기술이 보유 플랫폼 고도화에 활용 가능').")
+# 확보하려는 기술만 주어진 기업 / 보유 기술이 함께 주어진 기업 — 같은 섹션명, 다른 관점
+_GUIDE_DEM = dict(_G_COMMON, **{
+    "연관성": _G_RELATION,
+    "기술 적합성": ("과제가 company.수요기술_내용의 요구를 어떤 방식으로 충족·해결할 수 있는지, "
+              "과제의 기술 요소와 수요 항목을 대응시켜 구체적으로 설명. 완전히 일치하지 "
+              "않는 항목은 어느 범위까지 기여할 수 있는지로 서술"),
+})
+_GUIDE_HOLD = dict(_G_COMMON, **{
+    "연관성": _G_RELATION,
+    "기술 적합성": ("과제의 기술이 company.description 의 보유기술을 어떻게 보강·고도화하거나 "
+              "새로운 응용으로 확장할 수 있는지 설명. 보유기술의 어느 구성요소(소재·공정·"
+              "알고리즘·계측 등)에 결합되는지, 그 결합이 성능·적용범위·신뢰성 측면에서 "
+              "무엇을 개선하는지 인과적으로 서술"),
+})
+
+# ---- 매칭 기준 비노출 -------------------------------------------------------
+# 보고서에는 무엇을 기준으로 매칭했는지(확보 희망 기술 / 이미 보유한 기술)가 드러나면 안 된다.
+# 프롬프트에서 금지어를 명시하고, 위반하면 재생성하며, 끝까지 남으면 기계적으로 치환한다.
+BANNED = re.compile(r"수요\s?기술|기보유\s?기술|기술\s?수요|보유\s?기술|확보하려는|"
+                    r"수요\s?충족|보유\s?보강|수요\s?요구|수요와|수요의|수요에")
+_BAN_RULE = ("**매칭 기준을 가리키는 표현을 쓰지 마라. '수요기술'·'기보유기술'·'기술수요'·"
+             "'보유 기술'·'확보하려는'·'수요 충족'·'수요 요구' 같은 말은 단 하나도 쓰지 말고, "
+             "기업의 기술을 가리킬 때는 '당사 기술', '이 기업의 기술', '<기업명>의 기술' 처럼 "
+             "서술한다.**")
+# 최종 치환(문장 성립을 유지하는 최소 치환). 모델 출력에 남은 위반과, 기업 제출 원문에
+# 라벨로 박혀 있는 '수요기술명/수요기술 개요' 같은 표기에도 적용한다. 라벨성 표기를 먼저.
+_FIX = [(re.compile(r"수요\s?기술\s?명"), "기술명"),
+        (re.compile(r"수요\s?기술\s?개요"), "기술 개요"),
+        (re.compile(r"수요\s?기술\s?내용"), "기술 내용"),
+        (re.compile(r"수요\s?기술\s?사양"), "기술 사양"),
+        (re.compile(r"확보하려는\s*"), ""), (re.compile(r"기보유\s?기술"), "당사 기술"),
+        (re.compile(r"수요\s?기술"), "당사 기술"), (re.compile(r"기술\s?수요"), "당사 기술"),
+        (re.compile(r"보유\s?기술"), "당사 기술"), (re.compile(r"수요\s?충족"), "기술 부합"),
+        (re.compile(r"보유\s?보강"), "기술 보강"), (re.compile(r"수요\s?요구"), "기술 요건"),
+        (re.compile(r"수요와"), "당사 기술과"), (re.compile(r"수요의"), "당사 기술의"),
+        (re.compile(r"수요에"), "당사 기술에")]
+
+
+def debanned(text):
+    """금지 표현 최종 치환 → (정리된 텍스트, 치환 여부)."""
+    out = text
+    for pat, rep in _FIX:
+        out = pat.sub(rep, out)
+    return out, out != text
 
 
 def log(*a):
@@ -74,11 +112,12 @@ _PAREN_R = re.compile(r"\s+\)")
 
 
 def polish(s):
-    """숫자-단위·괄호 공백 잔재 정리 + 마침표 뒤 공백 보정."""
+    """숫자-단위·괄호 공백 잔재 정리 + 마침표 뒤 공백 보정 + 매칭 기준 표현 제거."""
     s = str(s or "")
     s = _PAREN_L.sub("(", _PAREN_R.sub(")", s))
     s = _NUM_SAFE.sub(r"\1\2", s)
     s = _NUM_JOSA.sub(r"\1\2", s)
+    s, _ = debanned(s)
     return cm.normalize_spacing(s)
 
 
@@ -102,54 +141,110 @@ def payload_for(unit, kws, proj):
         demand["desc_ok"] = 1
         demand["desc_issue"] = ""
     p = cm.build_demand_payload(demand, proj)
-    fmt = EX_HOLD if body else EX_DEM
+    guide = _GUIDE_HOLD if body else _GUIDE_DEM
     if body:
         p["company"]["보유기술명"] = unit["기보유기술명"]
         p["company"]["보유기술_구분"] = " / ".join(
             x for x in (unit["기술유형"], unit["기술분야"]) if x)
     p["output_requirements"].update({
-        "format": fmt,
-        "section_guide": {k: _GUIDE[k] for k in fmt},
+        "format": EX_FMT,
+        "section_guide": {k: guide[k] for k in EX_FMT},
         "must_cover_수요기술_사양": False,
+        "금지_표현": ["수요기술", "기보유기술", "기술수요", "보유 기술", "확보하려는",
+                  "수요 충족", "수요 요구"],
+        "기업_기술_지칭": "당사 기술 / 이 기업의 기술 / <기업명>의 기술",
     })
-    return p, fmt
+    return p, EX_FMT
 
 
-def gen_detail(unit, kws, proj):
-    """4섹션 상세 근거 → 한 셀 텍스트."""
+def gen_detail(unit, kws, proj, retry=RETRY):
+    """4섹션 상세 근거 → 한 셀 텍스트. 금지 표현이 섞이면 다시 생성한다."""
     p, fmt = payload_for(unit, kws, proj)
-    out = cm.stream_explanation(cm.build_messages(p, direction="company"),
-                                max_tokens=1400, temperature=0.2, top_p=0.9,
-                                expected_keys=fmt)
-    secs = cm.parse_sections(out, tuple(fmt))
-    parts = [f"[{k}] {secs.get(k, '').strip()}" for k in fmt if secs.get(k, "").strip()]
-    return cm.normalize_spacing("\n\n".join(parts) if parts else out.strip())
+    msgs = cm.build_messages(p, direction="company")
+    msgs[-1]["content"] += "\n" + _BAN_RULE
+    text = ""
+    for i in range(retry + 1):
+        out = cm.stream_explanation(msgs, max_tokens=1400, temperature=0.2 if i == 0 else 0.0,
+                                    top_p=0.9, expected_keys=fmt)
+        secs = cm.parse_sections(out, tuple(fmt))
+        parts = [f"[{k}] {secs.get(k, '').strip()}" for k in fmt if secs.get(k, "").strip()]
+        text = cm.normalize_spacing("\n\n".join(parts) if parts else out.strip())
+        if not BANNED.search(text):
+            return text
+    return text                                  # 남은 위반은 JSON 조립 단계에서 치환
 
 
-def gen_reason(unit, proj):
-    """표 '매칭 근거' 한 문장(긍정형). 실패 시 빈 문자열."""
+# 표용 한 문장 근거 — cm._MR_SYS/_MR_FEWSHOT 은 '수요와 부합' 류 표현을 예시로 쓰므로
+# (매칭 기준이 드러난다) 이 보고서용으로 규칙과 예시를 따로 둔다. 문장은 모델이 생성한다.
+_MR_SYS = (
+    "너는 기업의 기술과 국가 R&D 과제의 '매칭 근거'를 한 문장으로 요약하는 한국어 AI다. "
+    "이 과제가 왜 해당 기업에 추천되는지, 두 대상이 공유하는 핵심 기술·목적을 근거로 긍정적으로 서술한다.\n"
+    "작성 규칙:\n"
+    "1) 60자 이내 한 문장. 명사형/음슴체 종결(예: '~ 기술이 당사 기술과 부합', '~에 활용 가능').\n"
+    "2) 과제 개요·수행기관·기간·분야 등 '설명'은 쓰지 말고, 기업 기술과 과제의 '접점'만 쓴다.\n"
+    "3) 부정 평가('~ 부재', '~ 미포함', '~ 불일치', '~ 미흡', '다름', '부족')는 쓰지 않는다. "
+    "완전히 일치하지 않아도 공유하는 기술적 접점을 중심으로 '~에 활용 가능', '~ 기반 마련', "
+    "'~ 부분 부합' 처럼 기여 가능성으로 표현한다.\n"
+    "4) 문장 하나만 출력. 따옴표·머리기호·부연 금지.\n"
+    "5) few-shot 예시는 형식·톤 참고용이며, 예시의 고유명사·문구를 재사용하지 말고 현재 입력만 근거로 작성한다.\n"
+    "6) " + _BAN_RULE)
+
+
+def _mr_demo(tech, proj, ans):
+    return [{"role": "user", "content": f"[기업 기술]\n{tech}\n\n[R&D 과제]\n{proj}\n\n"
+                                        "매칭 근거(한 문장):"},
+            {"role": "assistant", "content": ans}]
+
+
+_MR_FEWSHOT = (
+    _mr_demo("기술명: 도라지 사포닌 정제·표준화 및 분말 제형화 기술\n"
+             "기술 내용: 다년근 도라지 유래 플라티코딘 D 등 사포닌을 표준화하고 분말 제형으로 안정화",
+             "과제명: 도라지 사포닌 추출 및 정제 공정 표준화 연구\n"
+             "과제설명: 도라지에서 사포닌을 고효율로 추출·정제하고 분말화하는 표준 공정 개발",
+             "도라지 사포닌 추출·정제·분말화 표준 공정이 당사 기술과 직접 일치")
+    + _mr_demo("기술명: 엣지 컴퓨터 기반 차량 번호판 인식 기술\n"
+               "기술 내용: 저전력 엣지 디바이스 실시간 번호판 OCR용 딥러닝 모델 경량화",
+               "과제명: 엣지 인공지능 자동화 기술\n"
+               "과제설명: 신경망 모델 압축·양자화 및 자동 설계로 엣지 저전력 실시간 추론 구현",
+               "모델 압축·양자화 기반 엣지 저전력 실시간 추론 기술이 경량 OCR 고도화에 활용 가능")
+    + _mr_demo("기술명: 오가노이드 3D 배양·이미징 통합 자동화 플랫폼\n"
+               "기술 내용: 나노리터 정밀 분주와 형광 이미징을 결합한 고속 스크리닝 장비",
+               "과제명: 3차원 뇌조직 신경활성도 정밀 측정용 스마트 플레이트 개발\n"
+               "과제설명: 고밀도 전극 어레이로 3D 배양 조직의 전기·형광 신호를 동시 계측",
+               "고밀도 전극 기반 3D 조직 신호 계측 기술이 당사 플랫폼 고도화에 활용 가능")
+)
+
+
+def gen_reason(unit, proj, retry=RETRY):
+    """표 '매칭 근거' 한 문장(긍정형). 금지 표현이 섞이면 다시 생성. 실패 시 빈 문자열."""
     blocks = []
     if unit["수요기술 내용"]:
-        blocks.append(f"수요기술명: {unit['수요기술명']}\n"
-                      f"수요기술 내용: {unit['수요기술 내용'][:600]}")
+        blocks.append(f"기술명: {unit['수요기술명']}\n"
+                      f"기술 내용: {unit['수요기술 내용'][:600]}")
     body = hold_body(unit)
     if body:
-        blocks.append(f"이미 보유한 기술: {unit['기보유기술명']}\n"
-                      f"보유기술 내용: {body[:600]}")
+        blocks.append(f"기술명: {unit['기보유기술명']}\n"
+                      f"기술 내용(보유): {body[:600]}")
     pj = f"과제명: {proj.get('과제명','')}\n과제설명: {str(proj.get('설명','') or '')[:600]}"
-    user = ("[기업 기술수요]\n" + "\n\n".join(blocks)
+    user = ("[기업 기술]\n" + "\n\n".join(blocks)
             + f"\n\n[R&D 과제]\n{pj}\n\n매칭 근거(한 문장):")
-    msgs = ([{"role": "system", "content": cm._MR_SYS + _MR_EXTRA}]
-            + cm._MR_FEWSHOT + [{"role": "user", "content": user}])
-    try:
-        out = cm.stream_explanation(msgs, max_tokens=120, temperature=0.0, top_p=1.0).strip()
-    except Exception as e:
-        log(f"      ! 매칭근거 실패: {e}")
-        return ""
-    out = out.strip().strip('"').strip("'").split("\n")[0].strip()
-    if out.startswith("매칭 근거"):
-        out = out.split(":", 1)[-1].strip()
-    return cm.normalize_spacing(out[:120])
+    msgs = ([{"role": "system", "content": _MR_SYS}] + _MR_FEWSHOT
+            + [{"role": "user", "content": user}])
+    out = ""
+    for _ in range(retry + 1):
+        try:
+            raw = cm.stream_explanation(msgs, max_tokens=120, temperature=0.0,
+                                        top_p=1.0).strip()
+        except Exception as e:
+            log(f"      ! 매칭근거 실패: {e}")
+            return ""
+        out = raw.strip().strip('"').strip("'").split("\n")[0].strip()
+        if out.startswith("매칭 근거"):
+            out = out.split(":", 1)[-1].strip()
+        out = cm.normalize_spacing(out[:120])
+        if not BANNED.search(out):
+            return out
+    return out                                   # 남은 위반은 JSON 조립 단계에서 치환
 
 
 def main():
@@ -255,6 +350,14 @@ def main():
     n_ex = sum(1 for v in best.values() for t in v["top10"] if t["추천근거_상세"])
     log(f"\n✔ {a.out}: 기업 {len(best)}건 · 추천 {n_rec}건 · 상세근거 {n_ex}건 "
         f"· 중복제외 과제 {len({t['과제고유번호'] for v in best.values() for t in v['top10']})}개")
+
+    # 매칭 기준 비노출 점검: 생성분(재시도 후 잔존) / 최종 산출(치환 후)
+    raw_v = sum(1 for k, v in ex.items() if BANNED.search(v)) \
+        + sum(1 for k, v in rs.items() if BANNED.search(v))
+    out_v = [(k, t["rank"]) for k, v in best.items() for t in v["top10"]
+             if BANNED.search(t["추천근거_상세"]) or BANNED.search(t["판단근거"])]
+    log(f"금지표현(매칭 기준) — 모델 출력 잔존 {raw_v}건(치환 처리) · 최종 산출 {len(out_v)}건"
+        + (f" {out_v[:5]}" if out_v else ""))
     if n_ex < n_rec:
         log(f"! 상세근거 누락 {n_rec - n_ex}건 — 다시 실행하면 누락분만 생성한다")
 

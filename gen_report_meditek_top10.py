@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
-"""2026 MEDITEK 수요기술·기보유기술 매칭 보고서(docx) — Top10 판.
+"""2026 MEDITEK 기업 기술 × 국가 R&D 과제 매칭 보고서(docx) — Top10 판.
 
 gen_report_meditek.py 의 확장. 서식·과제 상세 블록은 gen_report 를 그대로 재사용하고,
 아래가 다르다.
-  - 매칭 기준이 수요기술 + 기보유기술 → 기업 정보 블록에 보유기술 섹션이 들어간다
-  - 추천 과제 Top5 → Top10, 표에 적합도(수요충족/보유보강)·특허건수를 함께 싣는다
-  - 수요기술이 없고 기보유기술만 있는 기업도 수록(기존 파이프라인은 매칭 불가였음)
+  - 매칭 단위가 수요기술이 아니라 기업 → 기업 정보 블록에 기술 정보를 한데 싣는다
+  - 추천 과제 Top5 → Top10, 표에 적합도·특허건수를 함께 싣는다
+
+※ 보고서에는 매칭 기준(수요기술/기보유기술 중 무엇을 근거로 매칭했는지)을 노출하지 않는다.
+  기술 정보는 라벨 없이 '기술명/기술 내용'으로만 싣고, 근거 섹션 제목도 통일한다
+  (SECTION_RENAME — 이전에 생성된 근거 텍스트의 섹션 제목까지 렌더링 단계에서 바꾼다).
 
 입력:
   MEDITEK_TOP10_보고서.json        Top10 + 근거              ← explain_meditek_top10.py
@@ -38,30 +41,53 @@ from gen_report import (ACCENT, HAIR, HEAD_BG, HEAD_FG, INK, LABEL_BG, MUTED, NA
 HERE = os.path.dirname(os.path.abspath(__file__))
 BEST_JSON = os.environ.get("MEDITEK_TOP10_JSON",
                            os.path.join(HERE, "MEDITEK_TOP10_보고서.json"))
-OUT_BASE = "MEDITEK_수요·기보유기술_매칭보고서"
-PUBLISH_DATE = os.environ.get("MEDITEK_PUBLISH_DATE", "2026. 8. 11.")
+OUT_BASE = "MEDITEK_기업기술_국가RnD_매칭보고서"
+PUBLISH_DATE = os.environ.get("MEDITEK_PUBLISH_DATE", "2026. 8. 12.")
 
-COVER_EYEBROW = "TECHNOLOGY  DEMAND · IN-HOUSE  TECHNOLOGY  ×  PUBLIC  R&D"
+COVER_EYEBROW = "COMPANY  TECHNOLOGY  ×  PUBLIC  R&D  MATCHING"
 COVER_TITLE1 = "2026 MEDITEK"
-COVER_TITLE2 = "수요·기보유기술 매칭 보고서"
-COVER_SUB = "참여기업 수요기술 및 기보유기술 × 공공 R&D 과제, 의미 기반 매칭 결과"
+COVER_TITLE2 = "국가 R&D 과제 매칭 보고서"
+COVER_SUB = "참여기업 기술 × 공공 R&D 과제, 의미 기반 매칭 결과"
 ENGINE_NOTE = "생성  APOLLO AI 매칭 엔진"
 
 CORPUS_NOTE = ("매칭 대상 과제는 연구수행주체가 대학·출연연구소·국공립연구소·정부부처인 "
                "최근 5년(2020년 이후 제출) 국가 R&D 과제로 한정하였다.")
-METHOD_NOTE = ("매칭은 기업이 확보하려는 수요기술과 이미 보유한 기술을 구분 없이 한 문서로 "
-               "합쳐 핵심 키워드를 추출하고, 그 키워드로 과제 임베딩과의 의미 유사도가 높은 "
-               "후보를 선별한 뒤, 각 후보가 (가) 수요기술을 충족·해결하는지 (나) 기보유기술을 "
-               "보강·고도화하는지를 각각 정량 평가하는 방식으로 수행하였다. 최종 순위는 이 "
-               "적합도에 과제의 우수성(특허 성과를 중심으로 논문 성과·유망성)을 함께 반영해 "
-               "결정하였다.")
+METHOD_NOTE = ("매칭은 기업이 제출한 기술 정보에서 핵심 기술 키워드를 추출하고, 그 키워드로 "
+               "과제 임베딩과의 의미 유사도가 높은 후보를 선별한 뒤, 각 후보가 해당 기업의 "
+               "기술과 실질적으로 부합·기여하는 정도를 정량 평가하는 방식으로 수행하였다. "
+               "최종 순위는 이 적합도에 과제의 우수성(특허 성과를 중심으로 논문 성과·유망성)을 "
+               "함께 반영해 결정하였다.")
+FIT_NOTE = ("적합도는 각 과제가 해당 기업의 기술에 실질적으로 부합·기여하는 정도를 0~100으로 "
+            "평가한 값이다.")
+
+# 근거 텍스트의 섹션 제목 통일 — 매칭 기준이 드러나는 제목을 렌더링 단계에서 바꾼다
+# (이미 생성된 추천근거_상세 에는 옛 제목이 남아 있어도 보고서에는 노출되지 않는다).
+SECTION_RENAME = {"수요 충족 가능성": "기술 적합성",
+                  "기보유기술 보강 가능성": "기술 적합성",
+                  "수요기술 사양 적합성": "기술 적합성"}
+
+
+def neutralize(tp):
+    """과제 상세 dict 사본 — 상세 근거의 섹션 제목을 통일한 것."""
+    txt = str(tp.get("추천근거_상세", "") or "")
+    for old, new in SECTION_RENAME.items():
+        txt = txt.replace(f"[{old}]", f"[{new}]")
+    return dict(tp, 추천근거_상세=txt)
+
+
+def tech_names(dm):
+    """기업 기술명 — 매칭 기준 구분 없이 확보된 기술명을 그대로 나열."""
+    return [x for x in (dm.get("수요기술명", ""), dm.get("기보유기술명", "")) if x.strip()]
+
+
+def tech_bodies(dm):
+    """기업 기술 내용 — 라벨 없이 이어붙인다(어느 쪽이 매칭 기준인지 드러내지 않음)."""
+    return [x.strip() for x in (dm.get("수요기술 내용", ""), dm.get("기보유기술 내용", ""))
+            if x and x.strip()]
 
 # 과제 상세 정보표는 8개 항목 전부 싣는다. 연구책임자·국가연구자번호는
 # ntis_nrsno_260610.pkl 에서 확보되므로(_proj_meta_prep.py) 더 이상 제외하지 않는다.
 gr.OMIT_INFO_FIELDS = set()
-
-SRC_LABEL = {"수요+기보유": "수요기술 + 기보유기술", "수요": "수요기술",
-             "기보유": "기보유기술"}
 
 
 def next_out_path():
@@ -158,30 +184,24 @@ def build_cover(doc, n_dem, n_rec, n_proj):
 # ---- 개요 · 목차 ------------------------------------------------------------
 def build_intro_toc(doc, demands, n_rec, n_proj):
     n_dem = len(demands)
-    cnt = {}
-    for v in demands.values():
-        cnt[v["소스"]] = cnt.get(v["소스"], 0) + 1
     doc.add_paragraph().paragraph_format.page_break_before = True
     section_label(doc, "개요", before=4)
     overview = (
-        f"본 보고서는 2026 MEDITEK 참여기업 {n_dem}개사의 수요기술과 기보유기술을 대상으로, "
-        f"공공 R&D 과제 데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
+        f"본 보고서는 2026 MEDITEK 참여기업 {n_dem}개사의 기술을 대상으로, 공공 R&D 과제 "
+        f"데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
         f"기업별로 적합도가 높은 추천 과제 상위 10건(총 {n_rec}건, 중복 제외 {n_proj}개 과제)을 "
-        f"선정하고, 매칭 근거와 상세 추천 근거를 함께 제시하였다. "
-        f"대상 {n_dem}개사의 구성은 수요기술과 기보유기술이 모두 확보된 기업 "
-        f"{cnt.get('수요+기보유', 0)}개사, 수요기술만 확보된 기업 {cnt.get('수요', 0)}개사, "
-        f"기보유기술만 확보된 기업 {cnt.get('기보유', 0)}개사이다. {METHOD_NOTE} {CORPUS_NOTE}"
+        f"선정하고, 매칭 근거와 상세 추천 근거를 함께 제시하였다. {METHOD_NOTE} {CORPUS_NOTE}"
     )
     para(doc, overview, 10.5, color=INK, family=SERIF,
          align=WD_ALIGN_PARAGRAPH.JUSTIFY, line=1.6, after=8)
     para(doc, "각 기업은 다음 순서로 구성된다.", 10.5, color=INK, family=SERIF, after=3)
-    for ln in ["기업 정보  —  기업명 · 매칭 기준 · 수요기술 내용 · 기보유기술 내용 · 핵심 키워드",
+    for ln in ["기업 정보  —  기업명 · 기술명 · 기술 내용 · 핵심 키워드",
                "최종 추천 과제 Top 10  —  순위 · 과제명 · 수행기관 · 수행년도 · 적합도 · "
                "특허 · 매칭 근거",
                "추천 과제별 상세 정보표  —  과제고유번호 · 수행기간 · 표준분류 · 연구개발단계 · "
                "수행기관 · 연구수행주체 · 연구책임자 · 국가연구자번호",
-               "추천 과제별 상세 매칭 근거  —  연관성 · 수요 충족 가능성 또는 "
-               "기보유기술 보강 가능성 · 추천 과제의 우수성 · 유사 사례 및 실적",
+               "추천 과제별 상세 매칭 근거  —  연관성 · 기술 적합성 · 추천 과제의 우수성 · "
+               "유사 사례 및 실적",
                "추천 과제별 특허 실적  —  등록·출원 구분 · 특허명 · 기관 · 국가 · 번호 · 일자"]:
         q = doc.add_paragraph()
         q.paragraph_format.left_indent = Twips(260)
@@ -189,11 +209,8 @@ def build_intro_toc(doc, demands, n_rec, n_proj):
         style_run(q.add_run("· "), 10.5, bold=True, color=ACCENT)
         style_run(q.add_run(ln), 10, color=INK, family=SERIF)
 
-    para(doc, "적합도는 (가) 수요기술 충족과 (나) 기보유기술 보강을 각각 0~100으로 평가한 뒤 "
-              "높은 쪽을 취한 값이며, 표에는 두 관점의 점수를 함께 표기하였다. 수요기술이 없는 "
-              "기업은 보유 관점만, 기보유기술이 없는 기업은 수요 관점만 평가된다.",
-         9.5, color=MUTED, family=SERIF, align=WD_ALIGN_PARAGRAPH.JUSTIFY,
-         line=1.5, before=6)
+    para(doc, FIT_NOTE, 9.5, color=MUTED, family=SERIF,
+         align=WD_ALIGN_PARAGRAPH.JUSTIFY, line=1.5, before=6)
 
     section_label(doc, "목차", before=18)
     para(doc, "기업별 시작 페이지. (Word에서 열면 자동 갱신되며, 갱신 안 되면 목차 위에서 F9)",
@@ -224,9 +241,9 @@ def build_company_list(doc, ks, demands):
     para_border(cap, "bottom", NAVY, 14, 6)
     para(doc, f"기업 {len(ks)}개사", 10, color=MUTED, after=12)
 
-    t = doc.add_table(rows=1, cols=4)
+    t = doc.add_table(rows=1, cols=3)
     table_grid(t, HAIR, 4, "all"); table_cellmar(t)
-    for c, txt in zip(t.rows[0].cells, ("번호", "기업명", "매칭 기준", "수요기술 / 기보유기술")):
+    for c, txt in zip(t.rows[0].cells, ("번호", "기업명", "기술명")):
         shade_cell(c, HEAD_BG); cell_vcenter(c)
         fill_cell(c, txt, 9.5, bold=True, color=HEAD_FG, align=WD_ALIGN_PARAGRAPH.CENTER)
     for idx, k in enumerate(ks):
@@ -237,12 +254,10 @@ def build_company_list(doc, ks, demands):
                 shade_cell(c, ZEBRA)
         fill_cell(row[0], k, 9.5, bold=True, color=NAVY, align=WD_ALIGN_PARAGRAPH.CENTER)
         fill_cell(row[1], v["기업명"], 9.5, line=1.25)
-        fill_cell(row[2], SRC_LABEL.get(v["소스"], v["소스"]), 8.8,
-                  align=WD_ALIGN_PARAGRAPH.CENTER)
-        fill_cell(row[3], v["수요기술명"] or v["기보유기술명"], 9, line=1.25)
+        fill_cell(row[2], "\n".join(tech_names(v)), 9, line=1.25)
         for c in row:
             cell_vcenter(c)
-    table_fixed(t, [700, 1900, 1500, 4540])
+    table_fixed(t, [700, 2000, 5940])
 
 
 # ---- 기업 블록 --------------------------------------------------------------
@@ -259,27 +274,25 @@ def build_company(doc, k, dm, pidf):
     style_run(h2.add_run(dm["기업명"]), 14, bold=True, color=NAVY)
     para_border(h2, "bottom", HAIR, 6, 6)
 
-    # 기업 정보 표 — 수요기술과 기보유기술을 분리해 싣는다(성격이 반대인 정보)
-    rows = [("기업명", dm["기업명"]), ("매칭 기준", SRC_LABEL.get(dm["소스"], dm["소스"]))]
-    if (dm.get("수요기술 내용") or "").strip():
-        rows.append(("수요기술 내용", dm["수요기술 내용"].strip()))
-    if (dm.get("기보유기술명") or "").strip():
+    # 기업 정보 표 — 기술 정보는 라벨 없이 싣는다(매칭 기준 비노출)
+    rows = [("기업명", dm["기업명"], False)]
+    names = tech_names(dm)
+    if names:
         gubun = " / ".join(x for x in (dm.get("기술유형", ""), dm.get("기술분야", "")) if x)
-        rows.append(("기보유기술", dm["기보유기술명"].strip()
-                     + (f"\n({gubun})" if gubun else "")))
-    if (dm.get("기보유기술 내용") or "").strip():
-        rows.append(("기보유기술 내용", dm["기보유기술 내용"].strip()))
+        rows.append(("기술명", "\n".join(names) + (f"\n({gubun})" if gubun else ""), False))
+    for body in tech_bodies(dm):
+        rows.append(("기술 내용", body, True))
     if (dm.get("키워드") or "").strip():
-        rows.append(("핵심 키워드", " · ".join(x for x in dm["키워드"].split(";") if x)))
+        rows.append(("핵심 키워드",
+                     " · ".join(x for x in dm["키워드"].split(";") if x), False))
 
     t = doc.add_table(rows=0, cols=2)
     table_grid(t, HAIR, 4, "all"); table_cellmar(t, 44, 44, 110, 110)
-    for label, val in rows:
+    for label, val, prose in rows:
         cells = t.add_row().cells
         shade_cell(cells[0], LABEL_BG); cell_vcenter(cells[0])
         fill_cell(cells[0], label, 9.5, bold=True, color=NAVY,
                   align=WD_ALIGN_PARAGRAPH.CENTER)
-        prose = label in ("수요기술 내용", "기보유기술 내용")
         fill_cell(cells[1], val, 9,
                   align=WD_ALIGN_PARAGRAPH.JUSTIFY if prose else None,
                   family=SERIF if prose else gr.SANS, line=1.28)
@@ -304,11 +317,8 @@ def build_company(doc, k, dm, pidf):
         fill_cell(cells[2], tp.get("수행기관", ""), 8.4, align=WD_ALIGN_PARAGRAPH.CENTER)
         fill_cell(cells[3], "\n".join(year_lines(tp.get("과제설명문", ""))), 8.4,
                   align=WD_ALIGN_PARAGRAPH.CENTER)
-        # 적합도 = max(수요충족, 보유보강). 두 관점이 모두 평가된 기업은 세부 점수도 표기
-        fit = str(tp["적합도"])
-        if dm["소스"] == "수요+기보유":
-            fit += f"\n(수요 {tp['수요충족']} / 보유 {tp['보유보강']})"
-        fill_cell(cells[4], fit, 8.8, bold=True, color=INK,
+        # 적합도만 표기한다(관점별 세부 점수는 매칭 기준이 드러나므로 싣지 않는다)
+        fill_cell(cells[4], str(tp["적합도"]), 8.8, bold=True, color=INK,
                   align=WD_ALIGN_PARAGRAPH.CENTER)
         fill_cell(cells[5], f"{tp['특허건수']}건", 8.4, align=WD_ALIGN_PARAGRAPH.CENTER,
                   bold=tp["특허건수"] > 0, color=NAVY if tp["특허건수"] > 0 else MUTED)
@@ -320,7 +330,7 @@ def build_company(doc, k, dm, pidf):
     rows_cantsplit(t)
 
     for tp in dm["top10"]:
-        gr.build_top_detail(doc, tp, pidf)
+        gr.build_top_detail(doc, neutralize(tp), pidf)
 
 
 def build():

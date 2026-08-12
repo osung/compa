@@ -91,7 +91,7 @@ def intro_toc(ks):
                10.5, INK, TA_JUSTIFY, leading=17, family="Serif", space=8))
     s.append(P("각 기업은 다음 순서로 구성된다.", 10.5, INK, family="Serif", space=3))
     for ln in ["기업 정보 — 기업명 · 기술명 · 기술 내용 · 핵심 키워드",
-               "최종 추천 과제 Top 10 — 순위 · 과제명 · 수행기관 · 수행년도 · 적합도 · 특허 · 매칭 근거",
+               "최종 추천 과제 Top 10 — 순위 · 과제명 · 수행기관 · 수행년도 · 특허 · 매칭 근거",
                "추천 과제별 상세 정보표 — 과제고유번호 · 수행기간 · 표준분류 · 연구개발단계 · "
                "수행기관 · 연구수행주체 · 연구책임자 · 국가연구자번호",
                "추천 과제별 상세 매칭 근거 — 연관성 · 기술 적합성 · 추천 과제의 우수성 · "
@@ -101,8 +101,6 @@ def intro_toc(ks):
                            f'<font name="Serif" color="#1B2430">{esc(ln)}</font>',
                            ParagraphStyle("b", fontSize=10, leading=15, leftIndent=14,
                                           spaceAfter=3)))
-    s.append(P(gm.FIT_NOTE, 9.5, MUTED, TA_JUSTIFY, leading=14, family="Serif", space=6))
-
     s.append(section_label("목차", before=14))
     def pg(v): return str(v) if v else "··"
     rows = [[P("번호", 9.5, HEADFG, TA_CENTER, bold=True),
@@ -117,8 +115,7 @@ def intro_toc(ks):
     for k in ks:
         rows.append([P(f"No.{k}", 9, ACCENT, TA_CENTER, bold=True),
                      P(d[k]["기업명"], 9, INK, leading=11.5),
-                     P("<br/>".join(esc(x) for x in gm.tech_names(d[k])), 8.4, MUTED,
-                       leading=10.6),
+                     P("\n".join(gm.tech_names(d[k])), 8.4, MUTED, leading=10.6),
                      P(pg(gp.PAGE_MAP.get(k)), 9, MUTED, TA_RIGHT)])
     s.append(mktable(rows, [20 * mm, 38 * mm, CW - 70 * mm, 12 * mm], sty))
     s.append(PageBreak())
@@ -140,7 +137,7 @@ def company_list(ks):
         v = d[k]
         rows.append([P(k, 9.5, NAVY, TA_CENTER, bold=True),
                      P(v["기업명"], 9.5, leading=12),
-                     P("<br/>".join(esc(x) for x in gm.tech_names(v)), 9, INK, leading=12)])
+                     P("\n".join(gm.tech_names(v)), 9, INK, leading=12)])
     st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)])
     for i in range(2, len(rows), 2):
         st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
@@ -170,8 +167,8 @@ def company_block(k, dm):
     if names:
         gubun = " / ".join(x for x in (dm.get("기술유형", ""), dm.get("기술분야", "")) if x)
         rows.append([lab("기술명"),
-                     P("<br/>".join(esc(x) for x in names)
-                       + (f"  ({esc(gubun)})" if gubun else ""), 9, INK, leading=12)])
+                     P("\n".join(names) + (f"\n({gubun})" if gubun else ""), 9, INK,
+                       leading=12)])
     for body in gm.tech_bodies(dm):
         rows.append([lab("기술 내용"), prose(body)])
     if (dm.get("키워드") or "").strip():
@@ -185,15 +182,14 @@ def company_block(k, dm):
     s.append(Spacer(1, 6))
 
     s.append(section_label("최종 추천 과제  Top 10", before=4, after=5, size=12))
-    heads = ("순위", "과제명", "수행기관", "수행년도", "적합도", "특허", "매칭 근거")
+    # 적합도 점수는 싣지 않는다(순위로만 제시)
+    heads = ("순위", "과제명", "수행기관", "수행년도", "특허", "매칭 근거")
     rows = [[P(x, 9, HEADFG, TA_CENTER, bold=True) for x in heads]]
     for tp in dm["top10"]:
-        # 적합도만 표기(관점별 세부 점수는 매칭 기준이 드러나므로 싣지 않는다)
         rows.append([P(str(tp["rank"]), 10.5, NAVY, TA_CENTER, bold=True),
                      P(tp["과제명"], 8.4, leading=10.6),
                      P(tp.get("수행기관", ""), 8.2, INK, TA_CENTER),
                      P(gp.year_cell(tp.get("과제설명문", "")), 8.2, INK, TA_CENTER),
-                     P(str(tp["적합도"]), 8.4, INK, TA_CENTER, bold=True),
                      P(f"{tp['특허건수']}건", 8.2,
                        NAVY if tp["특허건수"] else MUTED, TA_CENTER,
                        bold=bool(tp["특허건수"])),
@@ -202,8 +198,8 @@ def company_block(k, dm):
     st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)])
     for i in range(2, len(rows), 2):
         st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
-    s.append(mktable(rows, [10 * mm, 48 * mm, 23 * mm, 17 * mm, 20 * mm, 11 * mm,
-                            CW - 129 * mm], st))
+    s.append(mktable(rows, [10 * mm, 52 * mm, 25 * mm, 17 * mm, 11 * mm,
+                            CW - 115 * mm], st))
     s.append(PageBreak())
     names = gm.tech_names(dm)
     for tp in dm["top10"]:

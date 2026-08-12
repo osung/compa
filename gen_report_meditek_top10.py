@@ -4,9 +4,10 @@
 gen_report_meditek.py 의 확장. 서식·과제 상세 블록은 gen_report 를 그대로 재사용하고,
 아래가 다르다.
   - 매칭 단위가 수요기술이 아니라 기업 → 기업 정보 블록에 기술 정보를 한데 싣는다
-  - 추천 과제 Top5 → Top10, 표에 적합도·특허건수를 함께 싣는다
+  - 추천 과제 Top5 → Top10, 표에 특허건수를 함께 싣는다(적합도 점수는 싣지 않는다)
 
-※ 보고서에는 매칭 기준(수요기술/기보유기술 중 무엇을 근거로 매칭했는지)을 노출하지 않는다.
+※ 보고서에는 매칭 기준(수요기술/기보유기술 중 무엇을 근거로 매칭했는지)과 적합도 점수를
+  노출하지 않는다. 순위(Top N)로만 제시한다.
   기술 정보는 라벨 없이 '기술명/기술 내용'으로만 싣고, 근거 섹션 제목도 통일한다
   (SECTION_RENAME — 이전에 생성된 근거 텍스트의 섹션 제목까지 렌더링 단계에서 바꾼다).
 
@@ -54,11 +55,9 @@ CORPUS_NOTE = ("매칭 대상 과제는 연구수행주체가 대학·출연연�
                "최근 5년(2020년 이후 제출) 국가 R&D 과제로 한정하였다.")
 METHOD_NOTE = ("매칭은 기업이 제출한 기술 정보에서 핵심 기술 키워드를 추출하고, 그 키워드로 "
                "과제 임베딩과의 의미 유사도가 높은 후보를 선별한 뒤, 각 후보가 해당 기업의 "
-               "기술과 실질적으로 부합·기여하는 정도를 정량 평가하는 방식으로 수행하였다. "
+               "기술과 실질적으로 부합·기여하는 정도를 평가하는 방식으로 수행하였다. "
                "최종 순위는 이 적합도에 과제의 우수성(특허 성과를 중심으로 논문 성과·유망성)을 "
                "함께 반영해 결정하였다.")
-FIT_NOTE = ("적합도는 각 과제가 해당 기업의 기술에 실질적으로 부합·기여하는 정도를 0~100으로 "
-            "평가한 값이다.")
 
 # 근거 텍스트의 섹션 제목 통일 — 매칭 기준이 드러나는 제목을 렌더링 단계에서 바꾼다
 # (이미 생성된 추천근거_상세 에는 옛 제목이 남아 있어도 보고서에는 노출되지 않는다).
@@ -81,9 +80,21 @@ def tech_names(dm):
 
 
 def tech_bodies(dm):
-    """기업 기술 내용 — 라벨 없이 이어붙인다(어느 쪽이 매칭 기준인지 드러내지 않음)."""
-    return [x.strip() for x in (dm.get("수요기술 내용", ""), dm.get("기보유기술 내용", ""))
-            if x and x.strip()]
+    """기업 기술 내용 — 라벨 없이 이어붙인다(어느 쪽이 매칭 기준인지 드러내지 않음).
+
+    제출 내용이 한 줄뿐이면 기술명과 같은 문장이 되므로(기술명은 내용 첫 줄에서 도출)
+    그런 본문은 싣지 않는다 — 같은 문장이 두 행에 반복되는 것을 막는다.
+    """
+    def norm(s):
+        return re.sub(r"\s+", "", s or "")
+
+    names = {norm(x) for x in tech_names(dm)}
+    out = []
+    for x in (dm.get("수요기술 내용", ""), dm.get("기보유기술 내용", "")):
+        x = (x or "").strip()
+        if x and norm(x) not in names:
+            out.append(x)
+    return out
 
 # 과제 상세 정보표는 8개 항목 전부 싣는다. 연구책임자·국가연구자번호는
 # ntis_nrsno_260610.pkl 에서 확보되므로(_proj_meta_prep.py) 더 이상 제외하지 않는다.
@@ -196,8 +207,7 @@ def build_intro_toc(doc, demands, n_rec, n_proj):
          align=WD_ALIGN_PARAGRAPH.JUSTIFY, line=1.6, after=8)
     para(doc, "각 기업은 다음 순서로 구성된다.", 10.5, color=INK, family=SERIF, after=3)
     for ln in ["기업 정보  —  기업명 · 기술명 · 기술 내용 · 핵심 키워드",
-               "최종 추천 과제 Top 10  —  순위 · 과제명 · 수행기관 · 수행년도 · 적합도 · "
-               "특허 · 매칭 근거",
+               "최종 추천 과제 Top 10  —  순위 · 과제명 · 수행기관 · 수행년도 · 특허 · 매칭 근거",
                "추천 과제별 상세 정보표  —  과제고유번호 · 수행기간 · 표준분류 · 연구개발단계 · "
                "수행기관 · 연구수행주체 · 연구책임자 · 국가연구자번호",
                "추천 과제별 상세 매칭 근거  —  연관성 · 기술 적합성 · 추천 과제의 우수성 · "
@@ -208,9 +218,6 @@ def build_intro_toc(doc, demands, n_rec, n_proj):
         q.paragraph_format.space_after = Pt(3)
         style_run(q.add_run("· "), 10.5, bold=True, color=ACCENT)
         style_run(q.add_run(ln), 10, color=INK, family=SERIF)
-
-    para(doc, FIT_NOTE, 9.5, color=MUTED, family=SERIF,
-         align=WD_ALIGN_PARAGRAPH.JUSTIFY, line=1.5, before=6)
 
     section_label(doc, "목차", before=18)
     para(doc, "기업별 시작 페이지. (Word에서 열면 자동 갱신되며, 갱신 안 되면 목차 위에서 F9)",
@@ -300,7 +307,8 @@ def build_company(doc, k, dm, pidf):
 
     # 최종 추천 Top10
     section_label(doc, "최종 추천 과제  Top 10", before=9, after=5)
-    heads = ("순위", "과제명", "수행기관", "수행년도", "적합도", "특허", "매칭 근거")
+    # 적합도 점수는 싣지 않는다(순위로만 제시)
+    heads = ("순위", "과제명", "수행기관", "수행년도", "특허", "매칭 근거")
     t = doc.add_table(rows=1, cols=len(heads))
     table_grid(t, HAIR, 4, "all"); table_cellmar(t, 32, 32, 70, 70)
     for c, txt in zip(t.rows[0].cells, heads):
@@ -317,16 +325,13 @@ def build_company(doc, k, dm, pidf):
         fill_cell(cells[2], tp.get("수행기관", ""), 8.4, align=WD_ALIGN_PARAGRAPH.CENTER)
         fill_cell(cells[3], "\n".join(year_lines(tp.get("과제설명문", ""))), 8.4,
                   align=WD_ALIGN_PARAGRAPH.CENTER)
-        # 적합도만 표기한다(관점별 세부 점수는 매칭 기준이 드러나므로 싣지 않는다)
-        fill_cell(cells[4], str(tp["적합도"]), 8.8, bold=True, color=INK,
-                  align=WD_ALIGN_PARAGRAPH.CENTER)
-        fill_cell(cells[5], f"{tp['특허건수']}건", 8.4, align=WD_ALIGN_PARAGRAPH.CENTER,
+        fill_cell(cells[4], f"{tp['특허건수']}건", 8.4, align=WD_ALIGN_PARAGRAPH.CENTER,
                   bold=tp["특허건수"] > 0, color=NAVY if tp["특허건수"] > 0 else MUTED)
-        fill_cell(cells[6], tp.get("판단근거", ""), 8.4,
+        fill_cell(cells[5], tp.get("판단근거", ""), 8.4,
                   align=WD_ALIGN_PARAGRAPH.JUSTIFY, family=SERIF, line=1.16)
         for c in cells:
             cell_vcenter(c)
-    table_fixed(t, [520, 2480, 1160, 860, 880, 500, 2240])
+    table_fixed(t, [520, 2860, 1220, 860, 520, 2660])
     rows_cantsplit(t)
 
     for tp in dm["top10"]:

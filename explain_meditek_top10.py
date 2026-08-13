@@ -116,9 +116,13 @@ _PAREN_L = re.compile(r"\(\s+")
 _PAREN_R = re.compile(r"\s+\)")
 
 
+_PUBLIC_RND = re.compile(r"공공\s*R&D")     # 명칭 통일: 공공 R&D → 국가 R&D
+
+
 def polish(s):
-    """숫자-단위·괄호 공백 잔재 정리 + 마침표 뒤 공백 보정 + 매칭 기준 표현 제거."""
+    """숫자-단위·괄호 공백 잔재 정리 + 마침표 뒤 공백 보정 + 매칭 기준 표현/명칭 정리."""
     s = str(s or "")
+    s = _PUBLIC_RND.sub(lambda m: m.group(0).replace("공공", "국가"), s)
     s = _PAREN_L.sub("(", _PAREN_R.sub(")", s))
     s = _NUM_SAFE.sub(r"\1\2", s)
     s = _NUM_JOSA.sub(r"\1\2", s)

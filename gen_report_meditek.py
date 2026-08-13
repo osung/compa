@@ -40,10 +40,10 @@ OUT_BASE = "MEDITEK_수요기술_매칭_보고서"
 PUBLISH_DATE = os.environ.get("MEDITEK_PUBLISH_DATE", "2026. 8. 11.")
 
 # 표지·개요 문구(MEDITEK)
-COVER_EYEBROW = "TECHNOLOGY  DEMAND  ×  PUBLIC  R&D  MATCHING"
+COVER_EYEBROW = "TECHNOLOGY  DEMAND  ×  NATIONAL  R&D  MATCHING"
 COVER_TITLE1 = "2026 MEDITEK"
 COVER_TITLE2 = "수요기술 매칭 보고서"
-COVER_SUB = "참여기업 수요기술 × 공공 R&D 과제, 의미 기반 매칭 결과"
+COVER_SUB = "참여기업 수요기술 × 국가 R&D 과제, 의미 기반 매칭 결과"
 ENGINE_NOTE = "생성  APOLLO AI 매칭 엔진"
 
 # 매칭 대상 코퍼스(rematch_filtered.build_filtered_corpus 와 일치)
@@ -174,7 +174,7 @@ def build_intro_toc(doc, n_dem, n_rec, n_proj):
     section_label(doc, "개요", before=4)
     overview = (
         f"본 보고서는 2026 MEDITEK 참여기업이 제출한 수요기술 {n_dem}건을 대상으로, "
-        f"공공 R&D 과제 데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
+        f"국가 R&D 과제 데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
         f"각 수요기술에 대해 적합도가 높은 추천 과제 상위 5건(총 {n_rec}건, "
         f"중복 제외 {n_proj}개 과제)을 선정하고, 매칭 근거와 상세 추천 근거를 함께 제시하였다. "
         f"{CORPUS_NOTE}"

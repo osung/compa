@@ -45,10 +45,10 @@ BEST_JSON = os.environ.get("MEDITEK_TOP10_JSON",
 OUT_BASE = "MEDITEK_기업기술_국가RnD_매칭보고서"
 PUBLISH_DATE = os.environ.get("MEDITEK_PUBLISH_DATE", "2026. 8. 12.")
 
-COVER_EYEBROW = "COMPANY  TECHNOLOGY  ×  PUBLIC  R&D  MATCHING"
+COVER_EYEBROW = "COMPANY  TECHNOLOGY  ×  NATIONAL  R&D  MATCHING"
 COVER_TITLE1 = "2026 MEDITEK"
 COVER_TITLE2 = "국가 R&D 과제 매칭 보고서"
-COVER_SUB = "참여기업 기술 × 공공 R&D 과제, 의미 기반 매칭 결과"
+COVER_SUB = "참여기업 기술 × 국가 R&D 과제, 의미 기반 매칭 결과"
 ENGINE_NOTE = "생성  APOLLO AI 매칭 엔진"
 
 CORPUS_NOTE = ("매칭 대상 과제는 연구수행주체가 대학·출연연구소·국공립연구소·정부부처인 "
@@ -66,12 +66,19 @@ SECTION_RENAME = {"수요 충족 가능성": "기술 적합성",
                   "수요기술 사양 적합성": "기술 적합성"}
 
 
+_PUBLIC_RND = re.compile(r"공공\s*R&D")     # 명칭 통일: 공공 R&D → 국가 R&D
+
+
+def rename_rnd(s):
+    return _PUBLIC_RND.sub(lambda m: m.group(0).replace("공공", "국가"), str(s or ""))
+
+
 def neutralize(tp):
-    """과제 상세 dict 사본 — 상세 근거의 섹션 제목을 통일한 것."""
-    txt = str(tp.get("추천근거_상세", "") or "")
+    """과제 상세 dict 사본 — 섹션 제목 통일 + '공공 R&D' 표기를 '국가 R&D' 로."""
+    txt = rename_rnd(tp.get("추천근거_상세", ""))
     for old, new in SECTION_RENAME.items():
         txt = txt.replace(f"[{old}]", f"[{new}]")
-    return dict(tp, 추천근거_상세=txt)
+    return dict(tp, 추천근거_상세=txt, 판단근거=rename_rnd(tp.get("판단근거", "")))
 
 
 def patent_count(tp):
@@ -208,7 +215,7 @@ def build_intro_toc(doc, demands, n_rec, n_proj):
     doc.add_paragraph().paragraph_format.page_break_before = True
     section_label(doc, "개요", before=4)
     overview = (
-        f"본 보고서는 2026 MEDITEK 참여기업 {n_dem}개사의 기술을 대상으로, 공공 R&D 과제 "
+        f"본 보고서는 2026 MEDITEK 참여기업 {n_dem}개사의 기술을 대상으로, 국가 R&D 과제 "
         f"데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
         f"기업별로 적합도가 높은 추천 과제 상위 10건(총 {n_rec}건, 중복 제외 {n_proj}개 과제)을 "
         f"선정하고, 매칭 근거와 상세 추천 근거를 함께 제시하였다. {METHOD_NOTE} {CORPUS_NOTE}"
@@ -338,7 +345,7 @@ def build_company(doc, k, dm, pidf):
         npat = patent_count(tp)
         fill_cell(cells[4], f"{npat}건", 8.4, align=WD_ALIGN_PARAGRAPH.CENTER,
                   bold=npat > 0, color=NAVY if npat > 0 else MUTED)
-        fill_cell(cells[5], tp.get("판단근거", ""), 8.4,
+        fill_cell(cells[5], rename_rnd(tp.get("판단근거", "")), 8.4,
                   align=WD_ALIGN_PARAGRAPH.JUSTIFY, family=SERIF, line=1.16)
         for c in cells:
             cell_vcenter(c)

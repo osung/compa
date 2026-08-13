@@ -79,7 +79,7 @@ def intro_toc(ks):
     n_rec = sum(len(d[k]["top5"]) for k in ks)
     n_proj = len({t["과제고유번호"] for k in ks for t in d[k]["top5"]})
     s.append(section_label("개요", before=2))
-    s.append(P(f"본 보고서는 2026 MEDITEK 참여기업이 제출한 수요기술 {n_dem}건을 대상으로, 공공 R&D 과제 "
+    s.append(P(f"본 보고서는 2026 MEDITEK 참여기업이 제출한 수요기술 {n_dem}건을 대상으로, 국가 R&D 과제 "
                f"데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. 각 수요기술에 대해 적합도가 높은 "
                f"추천 과제 상위 5건(총 {n_rec}건, 중복 제외 {n_proj}개 과제)을 선정하고, 매칭 근거와 상세 추천 "
                f"근거를 함께 제시하였다. {gm.CORPUS_NOTE}",

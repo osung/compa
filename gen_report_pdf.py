@@ -185,12 +185,12 @@ def section_label(text, before=10, after=5, size=13.5):
 
 def cover():
     story.append(Spacer(1, 34 * mm))
-    story.append(P("TECHNOLOGY  DEMAND  ×  PUBLIC  R&D  MATCHING", 10.5, ACCENT, TA_CENTER, bold=True, space=10))
+    story.append(P("TECHNOLOGY  DEMAND  ×  NATIONAL  R&D  MATCHING", 10.5, ACCENT, TA_CENTER, bold=True, space=10))
     story.append(P("COMPA 매칭데이", 27, NAVY, TA_CENTER, bold=True, space=3))
     story.append(P("기술수요조사 최종 매칭 보고서", 27, NAVY, TA_CENTER, bold=True, space=10))
     story.append(mktable([[""]], [70 * mm], [("LINEBELOW", (0, 0), (-1, -1), 1.5, NAVY)]))
     story.append(Spacer(1, 5 * mm))
-    story.append(P("기업 진성수요 × 공공 R&D 과제, 의미 기반 매칭 결과", 12, MUTED, TA_CENTER, space=22))
+    story.append(P("기업 진성수요 × 국가 R&D 과제, 의미 기반 매칭 결과", 12, MUTED, TA_CENTER, space=22))
     n_dem = len(demands); n_rec = sum(len(v["top5"]) for v in demands.values())
     meta = mktable([[P(f"{n_dem}건", 20, NAVY, TA_CENTER, bold=True), P(f"{n_rec}건", 20, NAVY, TA_CENTER, bold=True)],
                     [P("대상 수요기술", 9.5, MUTED, TA_CENTER), P("추천 과제", 9.5, MUTED, TA_CENTER)]],
@@ -214,7 +214,7 @@ def intro_toc(by_field):
     n_proj = len({t["과제고유번호"] for v in demands.values() for t in v["top5"]})
     n_fields = len([f for f in FIELD_ORDER if by_field[f]])
     story.append(section_label("개요", before=2))
-    story.append(P(f"본 보고서는 매칭데이 기술수요조사를 통해 취합된 기업 진성수요 {n_dem}건을 대상으로, 공공 R&D 과제 "
+    story.append(P(f"본 보고서는 매칭데이 기술수요조사를 통해 취합된 기업 진성수요 {n_dem}건을 대상으로, 국가 R&D 과제 "
                    f"데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. 각 수요기술에 대해 적합도가 높은 추천 "
                    f"과제 상위 5건(총 {n_rec}건, 중복 제외 {n_proj}개 과제)을 선정하고, 매칭 근거와 상세 추천 근거를 함께 "
                    f"제시하였다. 추천 대상은 최근 5년 이내(제출년도 2020년 이후) 과제이며, 연구수행주체가 대학·출연연구소·"

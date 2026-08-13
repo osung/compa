@@ -88,7 +88,7 @@ def intro_toc(ks):
     s, d = gp.story, gp.demands
     n_rec, n_proj = _counts(d)
     s.append(section_label("개요", before=2))
-    s.append(P(f"본 보고서는 2026 MEDITEK 참여기업 {len(ks)}개사의 기술을 대상으로, 공공 R&D 과제 "
+    s.append(P(f"본 보고서는 2026 MEDITEK 참여기업 {len(ks)}개사의 기술을 대상으로, 국가 R&D 과제 "
                f"데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
                f"기업별로 적합도가 높은 추천 과제 상위 10건(총 {n_rec}건, 중복 제외 {n_proj}개 "
                f"과제)을 선정하고, 매칭 근거와 상세 추천 근거를 함께 제시하였다. "
@@ -197,17 +197,17 @@ def company_block(k, dm):
                      P(gp.year_cell(tp.get("과제설명문", "")), 8.2, INK, TA_CENTER),
                      P(f"{npat(tp)}건", 8.2, NAVY if npat(tp) else MUTED, TA_CENTER,
                        bold=bool(npat(tp))),
-                     P(tp.get("판단근거", ""), 8.2, INK, TA_JUSTIFY, family="Serif",
-                       leading=10.6)])
+                     P(gm.rename_rnd(tp.get("판단근거", "")), 8.2, INK, TA_JUSTIFY,
+                       family="Serif", leading=10.6)])
     st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)])
     for i in range(2, len(rows), 2):
         st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
     s.append(mktable(rows, [10 * mm, 52 * mm, 25 * mm, 17 * mm, 11 * mm,
                             CW - 115 * mm], st))
     s.append(PageBreak())
-    names = gm.tech_names(dm)
     for tp in dm["top10"]:
-        gp.top_detail(gm.neutralize(tp), k, names[0] if names else dm["기업명"])
+        # 상세 페이지 상단 헤더는 기업명으로 표시한다(기술명이 길어 식별성이 떨어짐)
+        gp.top_detail(gm.neutralize(tp), k, dm["기업명"])
 
 
 def assemble():

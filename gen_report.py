@@ -414,7 +414,7 @@ def setup_cover_header(section):
 # ---- 표지 -------------------------------------------------------------------
 def build_cover(doc, n_dem, n_rec, n_proj):
     para(doc, "", after=54)
-    para(doc, "TECHNOLOGY  DEMAND  ×  PUBLIC  R&D  MATCHING", 10.5, bold=True,
+    para(doc, "TECHNOLOGY  DEMAND  ×  NATIONAL  R&D  MATCHING", 10.5, bold=True,
          color=ACCENT, align=WD_ALIGN_PARAGRAPH.CENTER, spacing=60, after=10)
     para(doc, "COMPA 매칭데이", 27, bold=True, color=NAVY,
          align=WD_ALIGN_PARAGRAPH.CENTER, after=2)
@@ -422,7 +422,7 @@ def build_cover(doc, n_dem, n_rec, n_proj):
          align=WD_ALIGN_PARAGRAPH.CENTER, after=14)
     rule = para(doc, "", align=WD_ALIGN_PARAGRAPH.CENTER, after=14)
     para_border(rule, "bottom", NAVY, 18, 2)
-    para(doc, "기업 진성수요 × 공공 R&D 과제, 의미 기반 매칭 결과",
+    para(doc, "기업 진성수요 × 국가 R&D 과제, 의미 기반 매칭 결과",
          12, color=MUTED, align=WD_ALIGN_PARAGRAPH.CENTER, after=44)
 
     # 메타 카드(무테 2열 표)
@@ -470,7 +470,7 @@ def build_intro_toc(doc, dbf, n_dem, n_rec, n_proj, n_fields):
     section_label(doc, "개요", before=4)
     overview = (
         f"본 보고서는 매칭데이 기술수요조사를 통해 취합된 기업 진성수요 {n_dem}건을 대상으로, "
-        f"공공 R&D 과제 데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
+        f"국가 R&D 과제 데이터베이스와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
         f"각 수요기술에 대해 적합도가 높은 추천 과제 상위 5건(총 {n_rec}건, 중복 제외 {n_proj}개 과제)을 "
         f"선정하고, 매칭 근거와 상세 추천 근거를 함께 제시하였다. "
         f"수요는 6T 기술 분류에 따라 {n_fields}개 분야(바이오기술·정보기술·나노기술·환경기술·융합기술)로 구분하여 수록하였다."

@@ -132,10 +132,20 @@ def main():
     bad = {k for lst in out.values() for x in lst for k in x if k not in ALLOWED}
     if bad:
         raise SystemExit(f"[중단] 허용되지 않은 필드가 산출에 포함됨: {sorted(bad)}")
-    blob = json.dumps(out, ensure_ascii=False)
-    leak = _SCORE_HINT.findall(blob)
+    # 점수/유망성 흔적 검사 — 특허명은 원본 그대로 싣는 자유 텍스트라 검사에서 제외한다
+    # (예: '딥러닝을 활용한 유전적 위험 점수 산출 장치 및 방법' 같은 실제 특허명이 걸린다).
+    # 점수 컬럼 유입은 위의 ALLOWED 키 검사가 막으므로 이 검사는 그 외 필드만 본다.
+    scan = json.dumps([{k: v for k, v in x.items() if k != "특허명"}
+                       for lst in out.values() for x in lst], ensure_ascii=False)
+    leak = _SCORE_HINT.findall(scan)
     if leak:
         raise SystemExit(f"[중단] 산출물에 점수/유망성 흔적: {set(leak)}")
+    hint_names = [x["특허명"] for lst in out.values() for x in lst
+                  if _SCORE_HINT.search(x["특허명"])]
+    if hint_names:
+        print(f"  (참고) '점수·유망' 문구가 든 특허명 {len(hint_names)}건 — 원본 특허명 그대로 유지: "
+              + " / ".join(sorted(set(hint_names))[:3]))
+    blob = json.dumps(out, ensure_ascii=False)
 
     with open(a.out, "w", encoding="utf-8") as f:
         f.write(blob)

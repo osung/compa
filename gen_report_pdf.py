@@ -28,16 +28,22 @@ _FONTS = [("Sans", "NotoSansKR-Regular.ttf"), ("Sans-B", "NotoSansKR-Bold.ttf"),
 _FALLBACK = next((p for p in ("/Library/Fonts/Arial Unicode.ttf",
                               "/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
                   if os.path.exists(p)), None)
-if all(os.path.exists(os.path.join(FDIR, fn)) for _, fn in _FONTS):
-    for nm, fn in _FONTS:
-        pdfmetrics.registerFont(TTFont(nm, os.path.join(FDIR, fn)))
-elif _FALLBACK:
-    print(f"! Noto KR 폰트 없음({FDIR}) → 대체 폰트 사용: {_FALLBACK}\n"
-          f"  정식 조판은 NotoSansKR/NotoSerifKR Regular·Bold 4종을 {FDIR} 에 두고 재실행하세요.")
-    for nm, _ in _FONTS:
+# 폰트는 자체(face)별로 등록하고, 없는 것만 대체 폰트로 채운다. 4종을 한 묶음으로 판정하면
+# Bold 하나가 없을 때 Regular 까지 전부 대체 폰트로 떨어져 조판 품질이 통째로 나빠진다.
+_missing = []
+for nm, fn in _FONTS:
+    path = os.path.join(FDIR, fn)
+    try:
+        pdfmetrics.registerFont(TTFont(nm, path))
+    except Exception:
+        if not _FALLBACK:
+            raise SystemExit(f"한글 폰트를 찾을 수 없습니다. {fn} 를 {FDIR} 에 두거나 "
+                             "Arial Unicode 를 설치하세요.")
         pdfmetrics.registerFont(TTFont(nm, _FALLBACK))
-else:
-    raise SystemExit(f"한글 폰트를 찾을 수 없습니다. NotoSansKR/NotoSerifKR 4종을 {FDIR} 에 두세요.")
+        _missing.append(fn)
+if _missing:
+    print(f"! 없는 한글 폰트 {_missing} → 해당 자체만 대체 폰트 사용: {_FALLBACK}\n"
+          f"  정식 조판은 NotoSansKR/NotoSerifKR Regular·Bold 4종을 {FDIR} 에 두고 재실행하세요.")
 
 def F(family, bold):
     return ("Sans-B" if bold else "Sans") if family == "Sans" else ("Serif-B" if bold else "Serif")

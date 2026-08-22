@@ -6,6 +6,9 @@
 후보로 삼고, 그중 특허 성과가 1건 이상 있는 과제만 매칭한다.
 
   ① 코퍼스   : 공급기관 수행과제 ∧ 제출년도>=YEAR_MIN ∧ 특허성과>=1건
+               (제출년도는 보고서를 낸 연도다. 그 해에 과제가 살아 있었다는 뜻이므로
+                결과적으로 'YEAR_MIN 이후 수행 중이거나 종료된 과제'가 남는다 —
+                시작연도는 그보다 이전일 수 있고, 종료가 YEAR_MIN 이전인 과제는 없다.)
   ② 질의     : 기업별로 하나의 근거만 쓴다(우선순위 — 요구사항 그대로)
                  1) 수요기술('주요사업분야(수요기술)')이 있으면 그것
                  2) 없으면 기보유기술 내용
@@ -53,6 +56,12 @@ W_COS, W_PROM_PRE = 0.75, 0.25
 # 재랭킹 가중치(합 1.0) — LLM 적합도가 순위를 주도한다
 W_FIT, W_COS_RE, W_PROM_RE = 0.70, 0.15, 0.15
 QUERY_MIN = 40             # 질의 본문이 이보다 짧으면 경고만 남긴다(질의는 그대로 사용)
+# 추천이 한 건도 없으면 최소 1건을 보장할 공급기관. 점수순 선정만으로는 과제 수가 적은
+# 기관이 통째로 빠지는데, 행사 운영상 기관별 미팅 기회를 보장해야 할 때 쓴다.
+# 넣을 기관은 손으로 고른다 — 전 기관에 일괄 적용하면 최고 적합도가 40(하한)인 기관까지
+# 끌려 들어와 85점 추천을 밀어낸다(국립경국대: 의료·제약 과제 7건, 최고 40점).
+#   한양대 에리카: 의료·제약 과제 19건, 최고 80점((주)비전메디컬) → 손실이 작다
+COVER_SUPPLIERS = ("한양대학교 에리카산학협력단",)
 # 질의 근거는 35B 가 판정한다(select_bases) — 수요기술 설명이 불충분하면 기보유기술,
 # 그래도 불충분하면 기업DB 사업내용을 단계적으로 더한다. 사용자가 기업 번호를 지정할
 # 필요는 없고, --augment 는 판정을 무시하고 강제로 더하는 예외 수단으로만 남긴다.
@@ -589,8 +598,28 @@ def build_corpus(sup_names, year_min=YEAR_MIN, patent_src="nice", allow_subject=
 
 
 # ---------------------------------------------------------------- LLM 재랭킹
+# 이 보고서의 기본 방향은 '공급기관(대학·병원·연구기관)이 보유한 과제 기술 → 기업'이다.
+# 방향을 명시하지 않으면 모델이 읽기 쉬운 쪽으로 서술해 버려, 기업이 이미 가진 기술을
+# 과제에 제공하는 관계까지 '기술도입'처럼 적는다(젠스퀘어·비엠에이 사례). 그래서
+# 채점 단계에서 방향(연계유형)을 함께 받아 근거 생성과 보고서 표기에 그대로 쓴다.
 _SYS = ("당신은 기업의 기술과 국가 R&D 과제의 연계 가능성을 평가하는 기술이전 전문가입니다. "
         "각 과제가 해당 기업에 얼마나 적합한 이전·협력 대상인지 냉정하게 평가합니다.")
+
+# 연계유형 — 보고서에 그대로 표기한다.
+# 기업이 과제에 부품·서비스를 제공하는 '사업화파트너'는 두지 않는다(요청). 이 보고서는
+# 공급기관 기술을 기업이 받아 쓰는 기술이전을 다루므로, 방향이 반대인 관계는 유형으로
+# 인정하지 않는다. 결과적으로 그런 건도 기술도입/공동연구 중 하나로 판정된다.
+KIND_IN, KIND_CO, KIND_NA = "기술도입", "공동연구", "미분류"
+KINDS = (KIND_IN, KIND_CO)
+KIND_DESC = {
+    KIND_IN: "공급기관 과제의 기술을 기업이 이전받아 자사 제품·서비스에 적용",
+    KIND_CO: "양측 기술을 결합해 기업과 공급기관이 함께 개발",
+    KIND_NA: "유형 판정 없음",
+}
+
+# 유형은 '표기'가 목적이므로 순위에는 쓰지 않는다. 유형을 점수에 섞으면 방향을 고르는
+# 판정과 적합도 채점이 서로를 흔든다(실측: 유형 항목을 채점 프롬프트에 넣자 같은 건의
+# 적합도가 85→40 으로 내려갔다). 그래서 채점은 그대로 두고, 선정된 추천에만 유형을 매긴다.
 
 # 질의 근거별 평가 관점. 근거가 둘이면 관점을 함께 제시하고 점수는 하나만 받는다
 # (둘 중 어느 쪽으로든 기여하면 적합한 것으로 본다).
@@ -631,6 +660,23 @@ def _unit_block(u):
                  + (f"- 구분: {meta}\n" if meta else "")
                  + f"- 내용: {body[:HOLD_MAX]}")
     return "\n\n".join(b)
+
+
+def _norm_kind(v):
+    """모델이 돌려준 유형 문자열 → 정규 유형. 못 알아보면 '미분류'로 드러낸다.
+
+    없는 유형(예: 예전의 '사업화파트너')을 억지로 둘 중 하나에 끼워 넣지 않는다 —
+    조용히 잘못 붙는 것보다 검증에서 미분류로 걸리는 편이 낫다.
+    """
+    t = re.sub(r"[\s·형]", "", str(v or ""))
+    for k in KINDS:
+        if re.sub(r"[\s·형]", "", k) in t:
+            return k
+    if "도입" in t or "이전" in t:
+        return KIND_IN
+    if "공동" in t or "결합" in t:
+        return KIND_CO
+    return KIND_NA
 
 
 def _parse(text):
@@ -687,17 +733,271 @@ def _score_batch(u, batch, guide):
         return {}
 
 
+# ---------------------------------------------------------------- 연계유형 판정
+_KIND_SYS = ("당신은 대학·병원·연구기관의 국가 R&D 과제와 기업을 잇는 기술이전 전문가입니다. "
+             "과제와 기업 사이 협력의 '방향'을 근거를 보고 냉정하게 판정합니다.")
+
+
+def _kind_guide(n):
+    return (f"아래 과제 {n}건에 대해, 이 기업과의 협력 방향을 판정하세요.\n"
+            "이 보고서는 공급기관(대학·병원·연구기관)이 보유한 과제 기술을 기업이 받아 쓰는 "
+            "기술이전을 다룹니다. 둘 중 하나를 고르세요.\n"
+            f"  ① {KIND_IN}: 기업이 과제의 기술을 넘겨받아 자사 제품·서비스에 바로 적용할 수 "
+            "있는 관계.\n"
+            f"  ② {KIND_CO}: 어느 한쪽 기술만으로는 부족해 양측 기술을 결합해 새로 개발해야 "
+            "하는 관계.\n"
+            "판정 기준\n"
+            "  · 과제의 기술 요소가 기업이 필요로 하는 것을 그대로 채워 주면 "
+            f"→ {KIND_IN}\n"
+            "  · 과제 기술만으로는 기업 제품이 되지 않고 기업 기술과 맞물려야 결과가 나오면 "
+            f"→ {KIND_CO}\n"
+            "  · 기업이 이미 비슷한 역량을 갖고 있어도, 과제에서 얻을 기술 요소가 그 역량을 "
+            f"보강·고도화한다면 {KIND_IN} 으로 본다.\n"
+            "  · 기업의 사업이 중개·유통·용역이어서 과제 기술을 자사 서비스의 대상·자산으로 "
+            f"다루는 경우도, 그 기술을 확보해 쓰는 것이므로 {KIND_IN} 으로 본다.\n"
+            "반드시 아래 JSON 형식으로만, 모든 과제에 답하세요(이유는 30자 이내):\n"
+            '{"results": [{"id": <번호>, "유형": "'
+            + f'{KIND_IN}|{KIND_CO}", "이유": "<근거>"}}, ...]}}')
+
+
+def _parse_kind(text):
+    m = re.search(r'\{.*"results".*\}', text, re.DOTALL)
+    blob = m.group(0) if m else text
+    try:
+        data = json.loads(blob)
+        items = data.get("results", []) if isinstance(data, dict) else data
+    except Exception:
+        items = [json.loads(x) for x in re.findall(r'\{[^{}]*"id"[^{}]*\}', blob)
+                 if mt._loadable(x)]
+    out = {}
+    for it in items:
+        try:
+            i = int(it["id"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        out[i] = (_norm_kind(it.get("유형")), str(it.get("이유", "")).strip()[:60])
+    return out
+
+
+def classify_kinds(u, sel, c, ckpt=None, retry=1):
+    """선정된 추천들의 연계유형을 한 번에 판정 → {pid: (유형, 이유)}.
+
+    채점(적합도)과 분리한 이유: 유형 항목을 채점 프롬프트에 함께 넣자 같은 건의 적합도가
+    85→40 으로 흔들렸다. 채점은 후보 120건에 걸고, 유형은 최종 선정분에만 매긴다
+    (기업당 1회 호출이라 값도 싸다).
+    """
+    out, need = {}, []
+    for x in sel:
+        pid = str(c["pid"][x["i"]])
+        ck = f"{u['키']}::{pid}"
+        if ckpt is not None and ck in ckpt:
+            out[pid] = tuple(ckpt[ck])
+        else:
+            need.append((pid, x))
+    if not need:
+        return out
+    lines = ["[평가 대상 R&D 과제]"]
+    for j, (pid, x) in enumerate(need, 1):
+        i = x["i"]
+        lines.append(f"{j}. 과제명: {c['pname'][i]}\n   설명: {c['pdesc'][i][:cm.DESC_CAND]}")
+    msgs = [{"role": "system", "content": _KIND_SYS},
+            {"role": "user", "content": f"{_unit_block(u)}\n\n" + "\n".join(lines)
+                                        + f"\n\n{_kind_guide(len(need))}"}]
+    got = {}
+    for _ in range(retry + 1):
+        try:
+            got = _parse_kind(cm.stream_explanation(msgs, max_tokens=700, temperature=0.0,
+                                                   top_p=1.0))
+        except Exception as e:
+            log(f"      ! 연계유형 판정 실패: {e}")
+        if len(got) >= len(need):
+            break
+    for j, (pid, _x) in enumerate(need, 1):
+        kind, why = got.get(j, (KIND_NA, ""))
+        out[pid] = (kind, why)
+        if ckpt is not None:
+            ckpt[f"{u['키']}::{pid}"] = [kind, why]
+    return out
+
+
+# ---------------------------------------------------------------- 유형별 근거문
+# xp.gen_reason 은 방향을 정하지 않아 모델이 읽기 쉬운 쪽으로 쓴다. 여기서는 채점 단계가
+# 정한 연계유형에 맞춰 '누가 무엇을 받는지'를 프롬프트로 고정한다. 금지표현·다듬기·
+# 유망성 차단은 explain_meditek_top10 의 것을 그대로 재사용한다.
+_DIR_RULE = {
+    KIND_IN: ("주어는 '과제의 기술'이다. 과제가 보유한 기술을 이 기업이 이전받아 자사 "
+              "제품·서비스에 적용하는 방향으로만 써라. 기업의 기술이 과제에 쓰인다는 "
+              "서술은 절대 하지 마라."),
+    KIND_CO: ("양측 기술을 결합하는 방향으로 써라. 어느 한쪽이 일방적으로 제공하는 것이 "
+              "아니라 함께 개발해야 하는 관계임이 드러나야 한다."),
+}
+_DIR_SHOT = {
+    KIND_IN: [("기술명: 디지털 후각·뇌혈류 기반 인지건강 선별 솔루션",
+               "과제명: 광학기술기반 뇌 혈류 산소포화도 측정 연구\n"
+               "과제설명: 근적외선 분광법으로 전두엽 혈류를 계측하는 진단장비 개발",
+               "근적외선 분광 기반 뇌혈류 측정 기술을 도입해 당사 인지건강 선별 솔루션의 "
+               "계측 정확도를 높일 수 있음")],
+    KIND_CO: [("기술명: 오가노이드 3D 배양·이미징 통합 자동화 플랫폼",
+               "과제명: 3차원 혈관 뇌 장벽 생체 조직 칩 제품 기술 개발\n"
+               "과제설명: 고품질 BBB 조직칩 제조와 약동학 분석",
+               "조직칩 제조 기술과 당사 자동화 분주·이미징 플랫폼을 결합해 약물 평가 "
+               "일괄 시스템으로 공동개발 가능")],
+}
+
+
+def _mr_sys(kind):
+    return (
+        "너는 대학·연구기관의 국가 R&D 과제와 기업을 잇는 '매칭 근거'를 한 문장으로 쓰는 "
+        "한국어 AI다.\n"
+        f"이 건의 연계유형은 '{kind}' 이다: {KIND_DESC.get(kind, '')}\n"
+        f"**방향 규칙: {_DIR_RULE.get(kind, '')}**\n"
+        "작성 규칙:\n"
+        "1) 70자 이내 한 문장. 명사형/음슴체 종결.\n"
+        "2) 과제 개요·수행기관·기간 같은 '설명'은 쓰지 말고 두 대상의 접점만 쓴다.\n"
+        "3) 부정 평가('~ 부재', '~ 미흡', '불일치')는 쓰지 않는다. 완전히 일치하지 않아도 "
+        "기여 가능성으로 표현한다.\n"
+        "4) 문장 하나만 출력. 따옴표·머리기호·부연 금지.\n"
+        "5) few-shot 은 방향과 톤 참고용이며 고유명사를 재사용하지 않는다.\n"
+        "6) " + xp._BAN_RULE)
+
+
+def gen_reason_typed(u, proj, kind, retry=2):
+    """연계유형에 맞는 방향으로 표용 한 문장 근거를 만든다."""
+    blocks = []
+    if u["수요기술 내용"]:
+        blocks.append(f"기술명: {u['수요기술명']}\n기술 내용: {u['수요기술 내용'][:600]}")
+    body = xp.hold_body(u)
+    if body:
+        blocks.append(f"기술명: {u['기보유기술명']}\n기술 내용(보유): {body[:600]}")
+    pj = f"과제명: {proj.get('과제명','')}\n과제설명: {str(proj.get('설명','') or '')[:600]}"
+    shots = []
+    for tech, prj, ans in _DIR_SHOT.get(kind, []):
+        shots += [{"role": "user",
+                   "content": f"[기업 기술]\n{tech}\n\n[R&D 과제]\n{prj}\n\n매칭 근거(한 문장):"},
+                  {"role": "assistant", "content": ans}]
+    user = ("[기업 기술]\n" + "\n\n".join(blocks)
+            + f"\n\n[R&D 과제]\n{pj}\n\n매칭 근거(한 문장):")
+    msgs = [{"role": "system", "content": _mr_sys(kind)}] + shots + \
+           [{"role": "user", "content": user}]
+    out = ""
+    for _ in range(retry + 1):
+        try:
+            raw = cm.stream_explanation(msgs, max_tokens=140, temperature=0.0,
+                                        top_p=1.0).strip()
+        except Exception as e:
+            log(f"      ! 매칭근거 실패: {e}")
+            return ""
+        out = raw.strip().strip('"').strip("'").split("\n")[0].strip()
+        if out.startswith("매칭 근거"):
+            out = out.split(":", 1)[-1].strip()
+        out = cm.normalize_spacing(out[:150])
+        if not xp.BANNED.search(out):
+            return out
+    return out
+
+
+# 상세근거의 섹션 가이드는 xp 에서 '근거 종류'(수요/보유)로만 갈린다. 둘 다 '과제 → 기업'
+# 방향을 전제하므로, 공동연구 건에서는 방향 규칙과 어긋날 수 있다
+# (가이드는 "과제가 수요를 충족·해결하는 방식"을 쓰라 하고 규칙은 그 반대를 금지한다).
+# 그래서 유형별로 '연관성'·'기술 적합성' 두 섹션의 지시를 바꿔 끼운다.
+# '추천 과제의 우수성'·'유사 사례 및 실적'은 과제 자체를 서술하므로 그대로 둔다.
+_SEC_BY_KIND = {
+    KIND_CO: {
+        "연관성": ("company 의 기술과 과제의 기술이 각각 무엇을 담당하는지 나눠 짚고, 둘이 "
+                "만나는 지점을 설명. 어느 한쪽이 일방적으로 제공하는 관계로 쓰지 말 것"),
+        "기술 적합성": ("과제의 기술과 이 기업의 기술을 어느 지점에서 결합해야 하는지, 결합해야만 "
+                   "얻어지는 결과가 무엇인지 설명. 각자 부족한 부분을 상대가 채우는 구조를 "
+                   "구체적으로 쓰고, 한쪽이 다른 쪽에 기술을 넘겨준다는 서술은 하지 말 것"),
+    },
+}
+
+
+def gen_detail_typed(u, kws, proj, kind, retry=2):
+    """4섹션 상세근거 — 섹션 지시와 방향 규칙을 모두 유형에 맞춘다."""
+    p, fmt = xp.payload_for(u, kws, proj)
+    guide = dict(p["output_requirements"]["section_guide"])
+    guide.update(_SEC_BY_KIND.get(kind, {}))
+    p["output_requirements"]["section_guide"] = {k: guide[k] for k in fmt}
+    p["output_requirements"]["연계유형"] = kind
+    p["output_requirements"]["연계유형_설명"] = KIND_DESC.get(kind, "")
+    msgs = cm.build_messages(p, direction="company")
+    msgs[-1]["content"] += ("\n" + xp._BAN_RULE
+                            + f"\n**이 건의 연계유형은 '{kind}' 이다: "
+                              f"{KIND_DESC.get(kind, '')}\n{_DIR_RULE.get(kind, '')}**")
+    text = ""
+    for i in range(retry + 1):
+        out = cm.stream_explanation(msgs, max_tokens=1400,
+                                    temperature=0.2 if i == 0 else 0.0,
+                                    top_p=0.9, expected_keys=fmt)
+        secs = cm.parse_sections(out, tuple(fmt))
+        parts = [f"[{k}] {secs.get(k, '').strip()}" for k in fmt if secs.get(k, "").strip()]
+        text = cm.normalize_spacing("\n\n".join(parts) if parts else out.strip())
+        if not xp.BANNED.search(text):
+            return text
+    return text
+
+# ---------------------------------------------------------------- 행 생성
+def make_row(u, x, rank, c, rev, ex_ck, rs_ck, ex_path, rs_path, dry_run, no_detail,
+             kind=None, kind_why=""):
+    """선정된 후보 하나 → 산출 행. 근거문이 없으면 여기서 35B 로 만들어 캐시에 넣는다."""
+    i = x["i"]
+    pid = str(c["pid"][i])
+    proj = {
+        "pid": pid, "과제명": c["pname"][i], "설명": c["pdesc"][i],
+        "수행기관": c["org"][i], "키워드": [],
+        "논문명": c["pmeta"].get(pid, {}).get("논문명_리스트") or [],
+        "특허명": [], "논문건수": int(c["pap"][i]), "특허건수": int(c["pat"][i]),
+        "총연구비_상위비율": c["pmeta"].get(pid, {}).get("총연구비_상위비율"),
+        "논문건수_상위비율": c["pmeta"].get(pid, {}).get("논문건수_상위비율"),
+    }
+    xp.assert_no_promise(proj, "근거 프롬프트")
+    kind = kind or x.get("kind") or KIND_NA
+    ckey = f"{u['번호'] or u['키']}::{pid}"
+    if not dry_run:
+        if ckey not in rs_ck:
+            rs_ck[ckey] = gen_reason_typed(u, proj, kind)
+            json.dump(rs_ck, open(rs_path, "w", encoding="utf-8"), ensure_ascii=False)
+        if not no_detail and ckey not in ex_ck:
+            ex_ck[ckey] = gen_detail_typed(u, u["키워드"], proj, kind)[:cm.DESC_OUT]
+            json.dump(ex_ck, open(ex_path, "w", encoding="utf-8"), ensure_ascii=False)
+    return {
+        "번호": u["번호"], "관리번호": u["관리번호"], "기업명": u["기업명"],
+        "사업자등록번호": u["사업자등록번호"], "기관유형": u["기관유형"],
+        "소스": u["소스"], "질의길이": u["질의길이"],
+        "기보유기술_보유": u["기보유기술_보유"], "기업DB_기업명": u["기업DB_기업명"],
+        "수요기술명": u["수요기술명"], "기보유기술명": u["기보유기술명"],
+        "키워드": cm.SEP.join(u["키워드"]),
+        "rank": rank, "순위구분": x["순위구분"], "연계유형": kind,
+        "연계유형근거": kind_why,
+        "최종점수": round(x["total"], 2), "적합도": x["fit"],
+        "1차점수": round(100 * x["pre"], 2),
+        "유사도_코사인": round(x["cos"], 6), "유사도_정규화": round(x["cos_n"], 4),
+        "유망성점수": round(float(c["promise"][i]), 2),
+        "특허건수": int(c["pat"][i]), "특허건수_과제메타": int(c["pat_meta"][i]),
+        "논문건수": int(c["pap"][i]),
+        "과제고유번호": pid, "과제명": c["pname"][i],
+        "과제분야": c["field"][i],
+        "과제수행기관": c["org"][i], "공급기관": rev.get(c["org"][i], ""),
+        "제출년도": int(c["year"][i]) if np.isfinite(c["year"][i]) else 0,
+        "연구수행주체": c["subject"][i],
+        "판단근거": xp.polish(rs_ck.get(ckey) or x["reason"]),
+        "추천근거_상세": xp.polish(ex_ck.get(ckey, "")),
+        "LLM채점근거": x["reason"],
+        "과제설명문": c["pdesc"][i][:cm.DESC_OUT],
+    }
+
+
 # ---------------------------------------------------------------- 산출
 OUT_COLS = ["번호", "관리번호", "기업명", "사업자등록번호", "기관유형", "소스", "질의길이",
             "기보유기술_보유", "기업DB_기업명", "수요기술명", "기보유기술명", "키워드",
-            "rank", "순위구분", "최종점수", "적합도", "1차점수", "유사도_코사인", "유사도_정규화",
+            "rank", "순위구분", "연계유형", "연계유형근거", "최종점수", "적합도", "1차점수", "유사도_코사인", "유사도_정규화",
             "유망성점수", "특허건수", "특허건수_과제메타", "논문건수",
             "과제고유번호", "과제명", "과제분야", "과제수행기관", "공급기관", "제출년도", "연구수행주체",
             "판단근거", "추천근거_상세", "LLM채점근거", "과제설명문"]
 XLSX_WIDTH = dict(mt.XLSX_WIDTH, **{
     "사업자등록번호": 14, "질의길이": 8, "기보유기술_보유": 11, "기업DB_기업명": 16,
     "1차점수": 8, "유사도_정규화": 11, "특허건수_과제메타": 13, "공급기관": 22,
-    "과제분야": 16,
+    "과제분야": 16, "연계유형": 11, "연계유형근거": 28,
     "제출년도": 8, "연구수행주체": 11, "판단근거": 40, "추천근거_상세": 60, "LLM채점근거": 30})
 WRAP = mt.WRAP_COLS | {"판단근거", "추천근거_상세", "LLM채점근거", "공급기관"}
 
@@ -743,7 +1043,9 @@ def report_json(df, units, out):
             tops.append({
                 "rank": int(r["rank"]), "과제고유번호": str(r["과제고유번호"]),
                 "과제명": r["과제명"], "수행기관": r["과제수행기관"],
-                "공급기관": r["공급기관"], "적합도": int(r["적합도"]),
+                "공급기관": r["공급기관"], "연계유형": r.get("연계유형", ""),
+                "연계유형근거": r.get("연계유형근거", ""),
+                "적합도": int(r["적합도"]),
                 "최종점수": float(r["최종점수"]), "특허건수": int(r["특허건수"]),
                 "논문건수": int(r["논문건수"]), "순위구분": r["순위구분"],
                 "판단근거": r["판단근거"], "추천근거_상세": r["추천근거_상세"],
@@ -813,10 +1115,17 @@ def verify(df, units, skipped, c, final, patent_src, field="의료제약"):
              or (len(u["근거"]) > 1 and not u["보조사용"])]
     chk("질의 근거 구성 일관", not wrong, f"위반 {wrong[:5]}")
     aug = [f"{u['기업명']}({u['소스']})" for u in units if u["보조사용"]]
-    chk("보조 근거는 판정 결과와 일치", all(
-        u["보조사용"] == any(not ok for _b, ok, _w, _h in u.get("근거판정", []))
-        or u["근거판정"] and u["근거판정"][-1][3] == "force" for u in units),
-        f"{len(aug)}개사: " + ", ".join(aug) if aug else "없음")
+    # --verify-only 는 판정을 다시 돌리지 않아 '근거판정' 이력이 없다(근거 구성만 복원한다).
+    # 이력이 없으면 이 항목은 건너뛴다 — 없는 키를 참조해 죽지 않게 한다.
+    if all("근거판정" in u for u in units):
+        chk("보조 근거는 판정 결과와 일치", all(
+            u["보조사용"] == any(not ok for _b, ok, _w, _h in u["근거판정"])
+            or (u["근거판정"] and u["근거판정"][-1][3] == "force") for u in units),
+            f"{len(aug)}개사: " + ", ".join(aug) if aug else "없음")
+    else:
+        chk("보조 근거 사용 기업", True,
+            (f"{len(aug)}개사: " + ", ".join(aug)) if aug else "없음"
+            + " (판정 이력 없음 — 저장된 근거 구성으로 확인)")
     chk("기업DB 근거는 사업자번호로 조회",
         all(ub[n]["기업DB_기업명"] for n in
             {u["기업명"] for u in units if "기업DB" in u["근거"]}),
@@ -844,6 +1153,20 @@ def verify(df, units, skipped, c, final, patent_src, field="의료제약"):
     thin = [f"{u['기업명']}({u['질의길이']}자)" for u in units if u["질의길이"] < QUERY_MIN]
     if thin:
         warn.append(f"질의 본문이 {QUERY_MIN}자 미만 {len(thin)}개사: " + ", ".join(thin))
+    if "연계유형" in df.columns:
+        from collections import Counter as _CK
+        dist = dict(_CK(df["연계유형"]))
+        chk("연계유형 전건 판정", df["연계유형"].astype(str).str.strip().ne("").all(), str(dist))
+        na = int((df["연계유형"] == KIND_NA).sum())
+        if na:
+            warn.append(f"연계유형 미분류 {na}건 — LLM 응답에 유형이 없었다")
+        bad_k = sorted(set(df["연계유형"]) - set(KINDS) - {KIND_NA})
+        chk("연계유형 값이 정의된 범위", not bad_k, f"이상값 {bad_k}")
+    cov = df[df["순위구분"] == "기관배분"]
+    if not cov.empty:
+        warn.append("기관 최소보장으로 넣은 추천 "
+                    + ", ".join(f"{r['공급기관']}→{r['기업명']}({r['rank']}위, 적합도 "
+                                f"{r['적합도']})" for r in cov.to_dict("records")))
     lowfit = df[df["순위구분"] == "보충"]
     if not lowfit.empty:
         warn.append(f"적합도 하한 미달 '보충' {len(lowfit)}건 "
@@ -882,6 +1205,10 @@ def main():
                     help="매칭 대상 기술 분야 한정(기본: 의료·제약 연관 과제만)")
     ap.add_argument("--allow-subject", action="store_true",
                     help="연구수행주체 필터(대학·출연연 등)도 함께 적용")
+    ap.add_argument("--cover", default=",".join(COVER_SUPPLIERS),
+                    help="추천 0건이면 최소 1건을 보장할 공급기관(쉼표 구분). "
+                         f"기본값 {','.join(COVER_SUPPLIERS) or '없음'}")
+    ap.add_argument("--no-cover", action="store_true", help="최소 보장을 쓰지 않는다")
     ap.add_argument("--dedupe-phase", action="store_true", help="연차 후속과제를 한 건으로 취급")
     ap.add_argument("--no-detail", action="store_true", help="4섹션 상세근거 생성 생략")
     ap.add_argument("--dry-run", action="store_true", help="LLM 없이 코퍼스·질의 구성만 점검")
@@ -963,8 +1290,10 @@ def main():
 
     kw_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_keywords_ckpt.json")
     sc_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_scores_ckpt.json")
-    ex_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_explain_ckpt.json")
-    rs_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_reason_ckpt.json")
+    ex_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_explain_v2_ckpt.json")
+    rs_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_reason_v2_ckpt.json")
+    kd_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_kind_ckpt.json")
+    kd_ck = json.load(open(kd_path, encoding="utf-8")) if os.path.exists(kd_path) else {}
     ck = {p: (json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {})
           for p in (kw_path, sc_path, ex_path, rs_path)}
     kw_ck, sc_ck, ex_ck, rs_ck = (ck[kw_path], ck[sc_path], ck[ex_path], ck[rs_path])
@@ -1005,6 +1334,8 @@ def main():
         for d in (ex_ck, rs_ck):
             for k in [k for k in d if k.startswith(pre)]:
                 d.pop(k)
+        for k in [k for k in kd_ck if k.startswith(f"{u['키']}::")]:
+            kd_ck.pop(k)
     if changed:
         for path, d in ((kw_path, kw_ck), (sc_path, sc_ck),
                         (ex_path, ex_ck), (rs_path, rs_ck)):
@@ -1070,6 +1401,11 @@ def main():
         f"· 적합도 하한 {a.min_fit} → TOP{a.final}")
 
     prom_all = np.clip(c["promise"] / 100.0, 0, 1)
+    cover_set = set() if a.no_cover else {x.strip() for x in a.cover.split(",") if x.strip()}
+    unknown_cover = cover_set - set(so.SUPPLY_ORGS)
+    if unknown_cover:
+        raise SystemExit(f"[중단] 대응표에 없는 최소보장 공급기관: {sorted(unknown_cover)}")
+    cover_pool = {}
     rows, t0 = [], time.time()
     for n, u in enumerate(units, 1):
         cos = np.clip(c["M"] @ encode(cm.SEP.join(u["키워드"])), -1, 1)
@@ -1098,7 +1434,8 @@ def main():
 
         scored = []
         for i in cand_idx:
-            fit, reason = got.get(str(c["pid"][i]), (0, ""))
+            rec = got.get(str(c["pid"][i]), (0, ""))
+            fit, reason = rec[0], rec[-1]
             total = 100.0 * (a.w_fit * fit / 100.0 + a.w_cos_re * float(cos_n[i])
                              + a.w_prom_re * float(prom_all[i])) / wsum
             scored.append({"i": int(i), "fit": int(fit), "reason": reason,
@@ -1122,52 +1459,19 @@ def main():
                 break
         n_pass = sum(1 for x in scored if x["fit"] >= a.min_fit)
 
+        kinds = ({} if a.dry_run else
+                 classify_kinds(u, sel, c, kd_ck))
+        if not a.dry_run:
+            json.dump(kd_ck, open(kd_path, "w", encoding="utf-8"), ensure_ascii=False)
         for rank, x in enumerate(sel, 1):
-            i = x["i"]
-            pid = str(c["pid"][i])
-            proj = {
-                "pid": pid, "과제명": c["pname"][i], "설명": c["pdesc"][i],
-                "수행기관": c["org"][i], "키워드": [],
-                "논문명": c["pmeta"].get(pid, {}).get("논문명_리스트") or [],
-                "특허명": [], "논문건수": int(c["pap"][i]), "특허건수": int(c["pat"][i]),
-                "총연구비_상위비율": c["pmeta"].get(pid, {}).get("총연구비_상위비율"),
-                "논문건수_상위비율": c["pmeta"].get(pid, {}).get("논문건수_상위비율"),
-            }
-            xp.assert_no_promise(proj, "근거 프롬프트")
-            ckey = f"{u['번호'] or u['키']}::{pid}"
-            if not a.dry_run:
-                if ckey not in rs_ck:
-                    rs_ck[ckey] = xp.gen_reason(u, proj)
-                    json.dump(rs_ck, open(rs_path, "w", encoding="utf-8"),
-                              ensure_ascii=False)
-                if not a.no_detail and ckey not in ex_ck:
-                    ex_ck[ckey] = xp.gen_detail(u, u["키워드"], proj)[:cm.DESC_OUT]
-                    json.dump(ex_ck, open(ex_path, "w", encoding="utf-8"),
-                              ensure_ascii=False)
-            rows.append({
-                "번호": u["번호"], "관리번호": u["관리번호"], "기업명": u["기업명"],
-                "사업자등록번호": u["사업자등록번호"], "기관유형": u["기관유형"],
-                "소스": u["소스"], "질의길이": u["질의길이"],
-                "기보유기술_보유": u["기보유기술_보유"], "기업DB_기업명": u["기업DB_기업명"],
-                "수요기술명": u["수요기술명"], "기보유기술명": u["기보유기술명"],
-                "키워드": cm.SEP.join(u["키워드"]),
-                "rank": rank, "순위구분": x["순위구분"],
-                "최종점수": round(x["total"], 2), "적합도": x["fit"],
-                "1차점수": round(100 * x["pre"], 2),
-                "유사도_코사인": round(x["cos"], 6), "유사도_정규화": round(x["cos_n"], 4),
-                "유망성점수": round(float(c["promise"][i]), 2),
-                "특허건수": int(c["pat"][i]), "특허건수_과제메타": int(c["pat_meta"][i]),
-                "논문건수": int(c["pap"][i]),
-                "과제고유번호": pid, "과제명": c["pname"][i],
-                "과제분야": c["field"][i],
-                "과제수행기관": c["org"][i], "공급기관": rev.get(c["org"][i], ""),
-                "제출년도": int(c["year"][i]) if np.isfinite(c["year"][i]) else 0,
-                "연구수행주체": c["subject"][i],
-                "판단근거": xp.polish(rs_ck.get(ckey) or x["reason"]),
-                "추천근거_상세": xp.polish(ex_ck.get(ckey, "")),
-                "LLM채점근거": x["reason"],
-                "과제설명문": c["pdesc"][i][:cm.DESC_OUT],
-            })
+            kind, why = kinds.get(str(c["pid"][x["i"]]), (KIND_NA, ""))
+            rows.append(make_row(u, x, rank, c, rev, ex_ck, rs_ck, ex_path, rs_path,
+                                 a.dry_run, a.no_detail, kind, why))
+        for x in scored:                 # 최소 보장용 후보 적립(공급기관별 최고 1건)
+            sup = rev.get(c["org"][x["i"]], "")
+            if sup in cover_set and str(c["pid"][x["i"]]) not in {
+                    str(c["pid"][y["i"]]) for y in sel}:
+                cover_pool.setdefault(sup, []).append((x, u))
         best = sel[0] if sel else None
         el = time.time() - t0
         log(f"    [{u['번호']:>3}] {u['기업명']:<16} 후보 {len(cands)} → 하한통과 {n_pass}"
@@ -1175,6 +1479,35 @@ def main():
             + (f" (1위 {best['total']:.1f}점 적합도 {best['fit']} "
                f"특허 {int(c['pat'][best['i']])}건 {c['org'][best['i']]})" if best else "")
             + f" [{n}/{len(units)}] {el/60:.1f}분")
+
+    # ---- 최소 보장: 추천 0건인 공급기관에 최고 후보 1건을 배분 ----
+    if cover_set and len(units) < len(units_all):
+        log(f"\n· 최소 보장 건너뜀 — 일부 기업만 돌린 실행에서는 적용하지 않는다 "
+            f"(대상 {sorted(cover_set)})")
+    elif cover_set:
+        have = {r["공급기관"] for r in rows}
+        for sup in sorted(cover_set):
+            if sup in have:
+                log(f"\n· 최소 보장 불필요 — {sup} 이미 "
+                    f"{sum(1 for r in rows if r['공급기관'] == sup)}건")
+                continue
+            pool = sorted(cover_pool.get(sup, []), key=lambda t: (-t[0]["fit"],
+                                                                 -t[0]["total"]))
+            if not pool:
+                log(f"\n! 최소 보장 실패 — {sup}: 채점된 후보가 없다")
+                continue
+            x, u = pool[0]
+            tgt = [r for r in rows if r["기업명"] == u["기업명"]]
+            drop = max(tgt, key=lambda r: r["rank"])          # 가장 낮은 순위를 교체
+            kd = classify_kinds(u, [x], c, kd_ck) if not a.dry_run else {}
+            json.dump(kd_ck, open(kd_path, "w", encoding="utf-8"), ensure_ascii=False)
+            k2, w2 = kd.get(str(c["pid"][x["i"]]), (KIND_NA, ""))
+            rows[rows.index(drop)] = make_row(
+                u, dict(x, 순위구분="기관배분"), drop["rank"], c, rev,
+                ex_ck, rs_ck, ex_path, rs_path, a.dry_run, a.no_detail, k2, w2)
+            log(f"\n· 최소 보장 배분 — {sup}: [{u['번호']}] {u['기업명']} "
+                f"{drop['rank']}위 교체 (적합도 {drop['적합도']}→{x['fit']}, "
+                f"{drop['과제명'][:28]}… → {c['pname'][x['i']][:28]}…)")
 
     df = pd.DataFrame(rows, columns=OUT_COLS)
     if a.dry_run:

@@ -276,6 +276,9 @@ def setup_styles(doc):
     for hs in ("Heading 1", "Heading 2", "Heading 3"):
         st = doc.styles[hs]
         st.font.name = SANS
+        # Word 기본 Heading 색은 테마 파랑이다. 런에 색을 따로 주더라도 스타일 색이
+        # 남으면 렌더러에 따라 파랑이 비쳐 나오므로 주색으로 고정한다.
+        st.font.color.rgb = RGBColor.from_string(NAVY)
         st.element.get_or_add_rPr().get_or_add_rFonts()
         for a in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
             st.element.rPr.rFonts.set(qn(a), SANS)
@@ -458,12 +461,19 @@ def add_disclaimer_box(doc):
     style_run(p.add_run(DISCLAIMER), 9.5, color=DISC_B, family=SANS)
 
 # ---- 개요 · 목차 ------------------------------------------------------------
+def keep_next(p):
+    """이 문단을 다음 내용(표·문단)과 같은 페이지에 두게 한다 — 제목만 남는 것을 막는다."""
+    pPr = p._p.get_or_add_pPr()
+    if pPr.find(qn("w:keepNext")) is None:
+        e = OxmlElement("w:keepNext"); e.set(qn("w:val"), "true"); pPr.append(e)
+    return p
+
 def section_label(doc, text, before=14, after=8):
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(before); p.paragraph_format.space_after = Pt(after)
     bar = p.add_run("▍"); style_run(bar, 13, bold=True, color=ACCENT)
     style_run(p.add_run(" " + text), 13.5, bold=True, color=NAVY)
-    return p
+    return keep_next(p)
 
 def build_intro_toc(doc, dbf, n_dem, n_rec, n_proj, n_fields):
     doc.add_paragraph().paragraph_format.page_break_before = True
@@ -643,7 +653,7 @@ def build_top_detail(doc, tp, pidf):
     tag = p.add_run(" 적합성 판단 "); style_run(tag, D_FONT, bold=True, color="FFFFFF"); run_shade(tag, BLUE)
     style_run(p.add_run("  " + tp.get("판단근거", "")), D_FONT + 0.5, bold=True, color=INK)
 
-    para(doc, "상세 매칭 근거", D_FONT + 1, bold=True, color=NAVY, before=9, after=3)
+    keep_next(para(doc, "상세 매칭 근거", D_FONT + 1, bold=True, color=NAVY, before=9, after=3))
     for title, body in split_sections(tp.get("추천근거_상세", "")):
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -654,10 +664,11 @@ def build_top_detail(doc, tp, pidf):
     # ---- 특허 실적: 등록 우선, 출원정보 병기. 다년도 전 연도 포함. 없으면 '없음' 표기 ----
     pats = PATENTS.get(pid, [])
     if not pats:
-        para(doc, "특허 실적", D_FONT + 1, bold=True, color=NAVY, before=11, after=3)
+        keep_next(para(doc, "특허 실적", D_FONT + 1, bold=True, color=NAVY, before=11, after=3))
         para(doc, "특허 실적 없음", D_FONT, color=MUTED)
     if pats:
-        para(doc, f"특허 실적  ({len(pats)}건)", D_FONT + 1, bold=True, color=NAVY, before=11, after=3)
+        keep_next(para(doc, f"특허 실적  ({len(pats)}건)", D_FONT + 1, bold=True,
+                       color=NAVY, before=11, after=3))
         heads = ("구분", "특허명", "출원·등록기관", "국가", "출원일", "출원번호", "등록일", "등록번호")
         t = doc.add_table(rows=1, cols=len(heads))
         table_grid(t, HAIR, 4, "all"); table_cellmar(t, 24, 24, 60, 60)

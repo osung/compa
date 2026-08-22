@@ -37,17 +37,24 @@ from docx.enum.section import WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, Twips
+from docx.shared import Inches, Pt, Twips
 
 import gen_report as gr
 import gen_report_meditek_top10 as gm
+import meditek_theme as mt
 import report_text_fix as tf
-from gen_report import (ACCENT, HAIR, HEAD_BG, HEAD_FG, INK, LABEL_BG, MUTED, NAVY,
-                        SERIF, add_disclaimer_box, cell_vcenter, fill_cell, para,
-                        para_border, run_shade, section_label, set_margins,
+
+mt.apply_docx(gr)                      # 표·제목 색을 MEDITEK CI 로 교체(로드 직후 1회)
+from gen_report import (SERIF, add_disclaimer_box, cell_vcenter, fill_cell, keep_next,
+                        para, para_border, run_shade, section_label, set_margins,
                         set_pgnum_start, setup_cover_header, setup_running_header,
                         setup_styles, shade_cell, style_run, table_cellmar,
-                        table_fixed, table_grid, rows_cantsplit, year_lines, ZEBRA, _text_w)
+                        table_fixed, table_grid, rows_cantsplit, year_lines, _text_w)
+
+_C = mt.DOCX_COLORS                    # 테마가 적용한 색을 한 곳에서 받아 쓴다
+ACCENT, NAVY, INK, MUTED = _C["ACCENT"], _C["NAVY"], _C["INK"], _C["MUTED"]
+HAIR, HEAD_BG, HEAD_FG = _C["HAIR"], _C["HEAD_BG"], _C["HEAD_FG"]
+LABEL_BG, ZEBRA = _C["LABEL_BG"], _C["ZEBRA"]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BEST_JSON = os.environ.get("MEDITEK_SUPPLY_JSON",
@@ -55,14 +62,19 @@ BEST_JSON = os.environ.get("MEDITEK_SUPPLY_JSON",
 OUT_BASE = "MEDITEK_공급기관_국가RnD_매칭보고서"
 PUBLISH_DATE = os.environ.get("MEDITEK_PUBLISH_DATE", "2026. 8. 22.")
 
-COVER_EYEBROW = "COMPANY  TECHNOLOGY  ×  SUPPLIER  R&D  MATCHING"
+COVER_EYEBROW = "의료기기 / 헬스케어  OPEN INNOVATION  &  BIZ PARTNERING"
 COVER_TITLE1 = "2026 MEDITEK"
-COVER_TITLE2 = "공급기관 R&D 과제 매칭 보고서"
-COVER_SUB = "참여기업 기술 × 공급기관 수행 국가 R&D 과제, 의미 기반 매칭 결과"
-ENGINE_NOTE = "생성  APOLLO AI 매칭 엔진"
+COVER_TITLE2 = "국가R&D 과제 매칭 보고서"
+COVER_EVENT = f"{mt.EVENT['일시']}      {mt.EVENT['장소']}"
+# 생성 주체 표기 — 발행일 아래 줄에 따로, 강조해서 싣는다
+ENGINE_NOTE = "APOLLO 국가R&D 사업화 유망성 탐색 플랫폼 AI 매칭 결과"
 
+# 코퍼스 조건은 '제출년도 2020 이후'로 걸지만, 제출년도는 보고서를 낸 연도라 그 해에도
+# 과제가 살아 있었다는 뜻이다. 실제 매칭 결과 114개 과제의 종료연도는 2020~2030 이고
+# 2020년 이전에 종료된 과제는 0건이므로(시작연도는 2013년까지 올라간다), 독자에게는
+# '2020년 이후 수행 중이거나 종료된 과제'로 적는 것이 사실에 맞다.
 CORPUS_NOTE = ("매칭 대상 과제는 2026 MEDITEK 공급기관이 수행한 국가 R&D 과제 중 "
-               "최근 5년(2020년 이후 제출) 과제로 한정하고, 그 가운데 특허 성과가 "
+               "2020년 이후 수행 중이거나 종료된 과제로 한정하고, 그 가운데 특허 성과가 "
                "1건 이상 확보된 과제만을 후보로 삼았다. 기술이전 협의가 가능한 권리가 "
                "실제로 존재하는 과제만 추천하기 위한 조건이다.")
 METHOD_NOTE = ("매칭은 기업이 제출한 기술 정보에서 핵심 기술 키워드를 추출하고, 그 키워드와 "
@@ -136,10 +148,21 @@ def tech_name_rows(dm):
     return out
 
 
+# 연계유형 표기 — 표에는 짧게, 개요에 정의를 둔다.
+# 유형은 기술도입·공동연구 둘뿐이다. 기업이 과제에 부품·서비스를 제공하는 방향은
+# 이 보고서가 다루는 기술이전이 아니라서 유형으로 두지 않는다.
+KIND_SHORT = {"기술도입": "기술도입", "공동연구": "공동연구", "미분류": "-"}
+KIND_COLOR = {"기술도입": mt.APOLLO_BLUE, "공동연구": mt.APOLLO_BLUE_LT,
+              "미분류": mt.APOLLO_GREY}
+KIND_LEGEND = [
+    ("기술도입", "공급기관 과제의 기술을 기업이 이전받아 자사 제품·서비스에 적용"),
+    ("공동연구", "양측 기술을 결합해 기업과 공급기관이 함께 개발"),
+]
+
 # 구분 머리행 문구 — 두 정보의 성격을 한 번에 알 수 있게 괄호로 덧붙인다
 GUBUN_LABEL = {"수요기술": "수요기술  (확보를 희망하는 기술)",
                "보유기술": "보유기술  (기업이 이미 보유한 기술·사업내용)"}
-GUBUN_COLOR = {"수요기술": ACCENT, "보유기술": NAVY}
+GUBUN_COLOR = {"수요기술": ACCENT, "보유기술": NAVY}   # 나비효과 두 색
 
 
 def industry_row(dm):
@@ -234,8 +257,15 @@ def preflight(demands, pidf):
 
 
 # ---- 표지 -------------------------------------------------------------------
-def build_cover(doc, n_dem, n_rec, n_proj, n_sup):
-    para(doc, "", after=54)
+def build_cover(doc):                      # 건수 요약은 표지에서 빼고 개요에만 둔다
+    para(doc, "", after=30)
+    lp = doc.add_paragraph()                      # MEDITEK 공식 로고(CI 원본)
+    lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    lp.paragraph_format.space_after = Pt(18)
+    try:
+        lp.add_run().add_picture(mt.LOGO_H, width=Inches(2.35))
+    except Exception as e:
+        print("로고 삽입 실패(로고 없이 진행):", e)
     para(doc, COVER_EYEBROW, 9.5, bold=True, color=ACCENT,
          align=WD_ALIGN_PARAGRAPH.CENTER, spacing=50, after=10)
     para(doc, COVER_TITLE1, 27, bold=True, color=NAVY,
@@ -244,22 +274,14 @@ def build_cover(doc, n_dem, n_rec, n_proj, n_sup):
          align=WD_ALIGN_PARAGRAPH.CENTER, after=14)
     rule = para(doc, "", align=WD_ALIGN_PARAGRAPH.CENTER, after=14)
     para_border(rule, "bottom", NAVY, 18, 2)
-    para(doc, COVER_SUB, 12, color=MUTED, align=WD_ALIGN_PARAGRAPH.CENTER, after=44)
+    para(doc, COVER_EVENT, 11.5, bold=True, color=NAVY,
+         align=WD_ALIGN_PARAGRAPH.CENTER, after=38)
 
-    t = doc.add_table(rows=2, cols=4)
-    t.alignment = 1
-    for j, (lab, val) in enumerate([("대상 기업", f"{n_dem}개사"),
-                                    ("추천 과제", f"{n_rec}건"),
-                                    ("중복 제외 과제", f"{n_proj}개"),
-                                    ("공급기관", f"{n_sup}곳")]):
-        fill_cell(t.rows[0].cells[j], val, 18, bold=True, color=NAVY,
-                  align=WD_ALIGN_PARAGRAPH.CENTER)
-        fill_cell(t.rows[1].cells[j], lab, 9.5, color=MUTED,
-                  align=WD_ALIGN_PARAGRAPH.CENTER)
-    table_fixed(t, [1980, 1980, 1980, 1980]); table_cellmar(t, 30, 30, 50, 50)
-    para(doc, "", after=40)
-    para(doc, f"발행일  {PUBLISH_DATE}      {ENGINE_NOTE}",
-         10, color=MUTED, align=WD_ALIGN_PARAGRAPH.CENTER, after=8)
+    para(doc, "", after=30)
+    para(doc, f"발행일  {PUBLISH_DATE}", 10, color=MUTED,
+         align=WD_ALIGN_PARAGRAPH.CENTER, after=5)
+    para(doc, ENGINE_NOTE, 11.5, bold=True, color=mt.APOLLO_BLUE,
+         align=WD_ALIGN_PARAGRAPH.CENTER, after=8)
     para(doc, "", after=30)
     add_disclaimer_box(doc)
 
@@ -268,7 +290,24 @@ def build_cover(doc, n_dem, n_rec, n_proj, n_sup):
 def build_intro_toc(doc, demands, n_rec, n_proj, n_sup):
     n_dem = len(demands)
     doc.add_paragraph().paragraph_format.page_break_before = True
-    section_label(doc, "개요", before=4)
+    section_label(doc, "행사 개요", before=4)
+    para(doc, mt.EVENT["명칭"], 11, bold=True, color=NAVY, after=6)
+    t = doc.add_table(rows=0, cols=2)
+    table_grid(t, HAIR, 4, "all"); table_cellmar(t, 40, 40, 110, 110)
+    for k in mt.EVENT_ROWS:
+        cells = t.add_row().cells
+        shade_cell(cells[0], LABEL_BG); cell_vcenter(cells[0])
+        fill_cell(cells[0], k, 9.5, bold=True, color=NAVY,
+                  align=WD_ALIGN_PARAGRAPH.CENTER)
+        fill_cell(cells[1], mt.EVENT[k], 9, line=1.3)
+    table_fixed(t, [1200, 7440])
+    rows_cantsplit(t)
+    para(doc, mt.EVENT["목적"], 10, color=INK, family=SERIF,
+         align=WD_ALIGN_PARAGRAPH.JUSTIFY, line=1.5, before=8, after=2)
+    para(doc, f"참가대상  {mt.EVENT['참가대상']}", 9, color=MUTED, after=1)
+    para(doc, f"자세한 내용  {mt.EVENT['홈페이지']}", 9, color=MUTED, after=4)
+
+    section_label(doc, "보고서 개요", before=16)
     overview = (
         f"본 보고서는 2026 MEDITEK 참여기업 {n_dem}개사의 기술을 대상으로, MEDITEK 공급기관 "
         f"{n_sup}곳이 수행한 국가 R&D 과제와의 의미 기반 매칭을 수행한 결과를 정리한 것이다. "
@@ -280,7 +319,7 @@ def build_intro_toc(doc, demands, n_rec, n_proj, n_sup):
     para(doc, "각 기업은 다음 순서로 구성된다.", 10.5, color=INK, family=SERIF, after=3)
     for ln in ["기업 정보  —  기업명 · 수요기술(확보 희망) · 보유기술(이미 보유) · 핵심 키워드",
                f"최종 추천 과제 {TOPN_LABEL}  —  순위 · 과제명 · 수행기관 · 공급기관 · "
-               "수행년도 · 특허 · 매칭 근거",
+               "유형 · 수행년도 · 특허 · 매칭 근거",
                "추천 과제별 상세 정보표  —  과제고유번호 · 수행기간 · 표준분류 · 연구개발단계 · "
                "수행기관 · 연구수행주체 · 연구책임자 · 국가연구자번호",
                "추천 과제별 상세 매칭 근거  —  연관성 · 기술 적합성 · 추천 과제의 우수성 · "
@@ -294,7 +333,16 @@ def build_intro_toc(doc, demands, n_rec, n_proj, n_sup):
     para(doc, "'공급기관'은 해당 과제를 수행한 기관의 기술이전 창구(산학협력단·기술지주 등)로, "
               "기술이전 협의를 시작할 접촉 지점을 뜻한다.",
          9.5, color=MUTED, family=SERIF, align=WD_ALIGN_PARAGRAPH.JUSTIFY,
-         line=1.45, before=6, after=2)
+         line=1.45, before=6, after=4)
+    para(doc, "'유형'은 기업과 공급기관 사이 기술 연계의 방향을 뜻한다.", 9.5, bold=True,
+         color=NAVY, after=2)
+    for k, d in KIND_LEGEND:
+        q = doc.add_paragraph()
+        q.paragraph_format.left_indent = Twips(260)
+        q.paragraph_format.space_after = Pt(2)
+        style_run(q.add_run(f"{k}  "), 9.5, bold=True,
+                  color=KIND_COLOR.get(k, NAVY))
+        style_run(q.add_run(d), 9, color=INK, family=SERIF)
 
     section_label(doc, "목차", before=18)
     para(doc, "기업별 시작 페이지. (Word에서 열면 자동 갱신되며, 갱신 안 되면 목차 위에서 F9)",
@@ -417,6 +465,8 @@ def build_company(doc, k, dm, pidf):
         cell = cells[0].merge(cells[1])
         shade_cell(cell, HEAD_BG); cell_vcenter(cell)
         fill_cell(cell, GUBUN_LABEL[gubun], 9.5, bold=True, color=HEAD_FG)
+        for para_ in cell.paragraphs:            # 구분 머리행 + 첫 항목을 한 페이지에
+            keep_next(para_)
 
     _row("기업명", dm["기업명"])
     ind = industry_row(dm)
@@ -440,7 +490,7 @@ def build_company(doc, k, dm, pidf):
 
     # 최종 추천 Top5 — 적합도 점수는 싣지 않는다(순위로만 제시)
     section_label(doc, f"최종 추천 과제  {TOPN_LABEL}", before=9, after=5)
-    heads = ("순위", "과제명", "수행기관", "공급기관", "수행년도", "특허", "매칭 근거")
+    heads = ("순위", "과제명", "수행기관", "공급기관", "유형", "수행년도", "특허", "매칭 근거")
     t = doc.add_table(rows=1, cols=len(heads))
     table_grid(t, HAIR, 4, "all"); table_cellmar(t, 32, 32, 62, 62)
     for c, txt in zip(t.rows[0].cells, heads):
@@ -458,16 +508,19 @@ def build_company(doc, k, dm, pidf):
                   line=1.14)
         fill_cell(cells[3], tp.get("공급기관", ""), 8.2, align=WD_ALIGN_PARAGRAPH.CENTER,
                   color=ACCENT, bold=True, line=1.14)
-        fill_cell(cells[4], "\n".join(year_lines(tp.get("과제설명문", ""))), 8.2,
+        fill_cell(cells[4], KIND_SHORT.get(tp.get("연계유형", ""), "-"), 8.2,
+                  align=WD_ALIGN_PARAGRAPH.CENTER, bold=True,
+                  color=KIND_COLOR.get(tp.get("연계유형", ""), MUTED), line=1.14)
+        fill_cell(cells[5], "\n".join(year_lines(tp.get("과제설명문", ""))), 8.2,
                   align=WD_ALIGN_PARAGRAPH.CENTER)
         npat = patent_count(tp)
-        fill_cell(cells[5], f"{npat}건", 8.2, align=WD_ALIGN_PARAGRAPH.CENTER,
+        fill_cell(cells[6], f"{npat}건", 8.2, align=WD_ALIGN_PARAGRAPH.CENTER,
                   bold=npat > 0, color=NAVY if npat > 0 else MUTED)
-        fill_cell(cells[6], gm.rename_rnd(tp.get("판단근거", "")), 8.2,
+        fill_cell(cells[7], gm.rename_rnd(tp.get("판단근거", "")), 8.2,
                   family=SERIF, line=1.16)
         for c in cells:
             cell_vcenter(c)
-    table_fixed(t, [560, 2260, 1080, 1180, 860, 480, 2220])
+    table_fixed(t, [620, 1900, 1000, 1080, 700, 800, 440, 2100])
     rows_cantsplit(t)
 
     for tp in dm[TOP_KEY]:
@@ -492,7 +545,7 @@ def build():
     n_sup = len({t.get("공급기관", "") for k in ks for t in demands[k][TOP_KEY]
                  if t.get("공급기관")})
 
-    build_cover(doc, len(ks), n_rec, n_proj, n_sup)
+    build_cover(doc)
     build_intro_toc(doc, demands, n_rec, n_proj, n_sup)
 
     doc.add_section(WD_SECTION.NEW_PAGE)

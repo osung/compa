@@ -20,7 +20,9 @@ import gen_report_pdf as gp                                              # noqa:
 from gen_report_pdf import (ACCENT, CW, HAIR, HEADBG, HEADFG, INK, LABELBG,  # noqa: E402
                             MUTED, NAVY, ZEBRA, DISCBD, DISCBG, P, base_grid, esc,
                             mktable, section_label)
+from reportlab.lib import colors                                          # noqa: E402
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT           # noqa: E402
+from reportlab.platypus import Image as RLImage                            # noqa: E402
 from reportlab.lib.styles import ParagraphStyle                           # noqa: E402
 from reportlab.lib.units import mm                                        # noqa: E402
 from reportlab.platypus import (NextPageTemplate, PageBreak, Paragraph,   # noqa: E402
@@ -28,7 +30,13 @@ from reportlab.platypus import (NextPageTemplate, PageBreak, Paragraph,   # noqa
 
 import gen_report_meditek_supply as gs                                    # noqa: E402
 import gen_report_meditek_top10 as gm                                     # noqa: E402
+import meditek_theme as mt                                                # noqa: E402
 import report_text_fix as tf                                              # noqa: E402
+
+mt.apply_pdf(gp)                               # 색을 MEDITEK CI 로 교체(로드 직후 1회)
+
+ACCENT, NAVY, INK, MUTED = gp.ACCENT, gp.NAVY, gp.INK, gp.MUTED
+HAIR, HEADBG, HEADFG, LABELBG, ZEBRA = gp.HAIR, gp.HEADBG, gp.HEADFG, gp.LABELBG, gp.ZEBRA
 
 gp.OMIT_INFO_FIELDS = gm.gr.OMIT_INFO_FIELDS   # docx 와 동일한 정보표 구성(8개 항목 전부)
 # 표기 교정 — docx 판과 같은 함수를 같은 대상에 적용해 두 산출물의 본문이 어긋나지 않게 한다
@@ -56,28 +64,27 @@ def _counts(d):
 
 
 def cover():
-    s, d = gp.story, gp.demands
-    n_rec, n_proj, n_sup = _counts(d)
-    s.append(Spacer(1, 34 * mm))
+    s = gp.story
+    s.append(Spacer(1, 22 * mm))
+    try:                                          # MEDITEK 공식 로고(CI 원본)
+        w, h = mt.logo_size(mt.LOGO_H, 60 * mm)
+        img = RLImage(mt.LOGO_H, width=w, height=h)
+        img.hAlign = "CENTER"
+        s.append(img)
+        s.append(Spacer(1, 7 * mm))
+    except Exception as e:
+        print("로고 삽입 실패(로고 없이 진행):", e)
     s.append(P(gs.COVER_EYEBROW, 9.5, ACCENT, TA_CENTER, bold=True, space=10))
     s.append(P(gs.COVER_TITLE1, 27, NAVY, TA_CENTER, bold=True, space=3))
     s.append(P(gs.COVER_TITLE2, 27, NAVY, TA_CENTER, bold=True, space=10))
     s.append(mktable([[""]], [70 * mm], [("LINEBELOW", (0, 0), (-1, -1), 1.5, NAVY)]))
     s.append(Spacer(1, 5 * mm))
-    s.append(P(gs.COVER_SUB, 12, MUTED, TA_CENTER, space=22))
+    s.append(P(gs.COVER_EVENT, 11.5, NAVY, TA_CENTER, bold=True, space=18))
 
-    vals = [("대상 기업", f"{len(d)}개사"), ("추천 과제", f"{n_rec}건"),
-            ("중복 제외 과제", f"{n_proj}개"), ("공급기관", f"{n_sup}곳")]
-    meta = mktable([[P(v, 18, NAVY, TA_CENTER, bold=True) for _, v in vals],
-                    [P(l, 9.5, MUTED, TA_CENTER) for l, _ in vals]],
-                   [30 * mm] * 4,
-                   [("TOPPADDING", (0, 0), (-1, -1), 3),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6)])
-    meta.hAlign = "CENTER"
-    s.append(meta)
-    s.append(Spacer(1, 12 * mm))
-    s.append(P(f"발행일  {gs.PUBLISH_DATE}       {gs.ENGINE_NOTE}", 10, MUTED,
-               TA_CENTER, space=16))
+    s.append(Spacer(1, 10 * mm))       # 건수 요약은 표지에서 빼고 개요에만 둔다
+    s.append(P(f"발행일  {gs.PUBLISH_DATE}", 10, MUTED, TA_CENTER, space=4))
+    s.append(P(gs.ENGINE_NOTE, 11.5, colors.HexColor("#" + mt.APOLLO_BLUE),
+               TA_CENTER, bold=True, space=16))
     s.append(mktable([[Paragraph(
         f'<font name="Sans-B" color="#A93226" size="10.5">※  유의사항</font><br/>'
         f'<font name="Sans" color="#7B241C" size="9.5">{esc(gp.DISCLAIMER)}</font>',
@@ -93,7 +100,19 @@ def cover():
 def intro_toc(ks):
     s, d = gp.story, gp.demands
     n_rec, n_proj, n_sup = _counts(d)
-    s.append(section_label("개요", before=2))
+    s.append(section_label("행사 개요", before=2))
+    s.append(P(mt.EVENT["명칭"], 11, NAVY, bold=True, space=5))
+    rows = [[P(k, 9.5, NAVY, TA_CENTER, bold=True), P(mt.EVENT[k], 9, INK, leading=12.5)]
+            for k in mt.EVENT_ROWS]
+    st = base_grid()
+    for i in range(len(rows)):
+        st.append(("BACKGROUND", (0, i), (0, i), LABELBG))
+    s.append(mktable(rows, [18 * mm, CW - 18 * mm], st))
+    s.append(Spacer(1, 4 * mm))
+    s.append(P(mt.EVENT["목적"], 10, INK, TA_JUSTIFY, family="Serif", leading=15, space=4))
+    s.append(P(f"참가대상  {mt.EVENT['참가대상']}", 9, MUTED, space=1))
+    s.append(P(f"자세한 내용  {mt.EVENT['홈페이지']}", 9, MUTED, space=2))
+    s.append(section_label("보고서 개요", before=12))
     s.append(P(f"본 보고서는 2026 MEDITEK 참여기업 {len(ks)}개사의 기술을 대상으로, MEDITEK "
                f"공급기관 {n_sup}곳이 수행한 국가 R&D 과제와의 의미 기반 매칭을 수행한 결과를 "
                f"정리한 것이다. 기업별로 적합도가 높은 추천 과제 상위 5건(총 {n_rec}건, "
@@ -103,19 +122,26 @@ def intro_toc(ks):
     s.append(P("각 기업은 다음 순서로 구성된다.", 10.5, INK, family="Serif", space=3))
     for ln in ["기업 정보 — 기업명 · 수요기술(확보 희망) · 보유기술(이미 보유) · 핵심 키워드",
                f"최종 추천 과제 {gs.TOPN_LABEL} — 순위 · 과제명 · 수행기관 · 공급기관 · "
-               "수행년도 · 특허 · 매칭 근거",
+               "유형 · 수행년도 · 특허 · 매칭 근거",
                "추천 과제별 상세 정보표 — 과제고유번호 · 수행기간 · 표준분류 · 연구개발단계 · "
                "수행기관 · 연구수행주체 · 연구책임자 · 국가연구자번호",
                "추천 과제별 상세 매칭 근거 — 연관성 · 기술 적합성 · 추천 과제의 우수성 · "
                "유사 사례 및 실적",
                "추천 과제별 특허 실적 — 등록·출원 구분 · 특허명 · 기관 · 국가 · 번호 · 일자"]:
-        s.append(Paragraph(f'<font name="Sans-B" color="#0E7C86">· </font>'
-                           f'<font name="Serif" color="#1B2430">{esc(ln)}</font>',
+        s.append(Paragraph(f'<font name="Sans-B" color="{gp._hx(ACCENT)}">· </font>'
+                           f'<font name="Serif" color="{gp._hx(INK)}">{esc(ln)}</font>',
                            ParagraphStyle("b", fontSize=10, leading=15, leftIndent=14,
                                           spaceAfter=3)))
     s.append(P("'공급기관'은 해당 과제를 수행한 기관의 기술이전 창구(산학협력단·기술지주 등)로, "
                "기술이전 협의를 시작할 접촉 지점을 뜻한다.",
-               9.5, MUTED, TA_JUSTIFY, family="Serif", leading=14, space=2))
+               9.5, MUTED, TA_JUSTIFY, family="Serif", leading=14, space=4))
+    s.append(P("'유형'은 기업과 공급기관 사이 기술 연계의 방향을 뜻한다.", 9.5, NAVY,
+               bold=True, space=2))
+    for k, dsc in gs.KIND_LEGEND:
+        s.append(Paragraph(
+            f'<font name="Sans-B" color="#{gs.KIND_COLOR.get(k, mt.APOLLO_BLUE)}">{esc(k)}</font>'
+            f'  <font name="Serif" color="{gp._hx(INK)}">{esc(dsc)}</font>',
+            ParagraphStyle("kl", fontSize=9, leading=13.5, leftIndent=14, spaceAfter=2)))
 
     s.append(section_label("목차", before=14))
 
@@ -198,8 +224,8 @@ def supply_summary():
 
 def company_block(k, dm):
     s = gp.story
-    badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="#0E7C86"> No.{esc(k)} </font>'
-             f'  <font name="Sans-B" color="#14315C" size="14">{esc(dm["기업명"])}</font>')
+    badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="{gp._hx(ACCENT)}"> No.{esc(k)} </font>'
+             f'  <font name="Sans-B" color="{gp._hx(NAVY)}" size="14">{esc(dm["기업명"])}</font>')
     from reportlab.pdfbase import pdfmetrics
     off = (pdfmetrics.stringWidth(f" No.{k} ", "Sans-B", 14)
            + pdfmetrics.stringWidth("  ", "Sans-B", 14))
@@ -253,7 +279,7 @@ def company_block(k, dm):
 
     s.append(section_label(f"최종 추천 과제  {gs.TOPN_LABEL}", before=4, after=5, size=12))
     # 적합도 점수는 싣지 않는다(순위로만 제시)
-    heads = ("순위", "과제명", "수행기관", "공급기관", "수행년도", "특허", "매칭 근거")
+    heads = ("순위", "과제명", "수행기관", "공급기관", "유형", "수행년도", "특허", "매칭 근거")
     rows = [[P(x, 9, HEADFG, TA_CENTER, bold=True) for x in heads]]
     for tp in dm[TOP_KEY]:
         n = npat(tp)
@@ -262,6 +288,10 @@ def company_block(k, dm):
                      P(tp.get("수행기관", ""), 8.0, INK, TA_CENTER, leading=10.2),
                      P(tp.get("공급기관", ""), 8.0, ACCENT, TA_CENTER, bold=True,
                        leading=10.2),
+                     P(gs.KIND_SHORT.get(tp.get("연계유형", ""), "-").replace("\n", " "),
+                       7.8, colors.HexColor("#" + gs.KIND_COLOR.get(
+                           tp.get("연계유형", ""), mt.APOLLO_GREY)),
+                       TA_CENTER, bold=True, leading=9.6),
                      P(gp.year_cell(tp.get("과제설명문", "")), 8.0, INK, TA_CENTER),
                      P(f"{n}건", 8.0, NAVY if n else MUTED, TA_CENTER, bold=bool(n)),
                      P(gm.rename_rnd(tp.get("판단근거", "")), 8.0, INK, TA_LEFT,
@@ -269,8 +299,8 @@ def company_block(k, dm):
     st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)])
     for i in range(2, len(rows), 2):
         st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
-    s.append(mktable(rows, [11 * mm, 42 * mm, 22 * mm, 24 * mm, 17 * mm, 10 * mm,
-                            CW - 126 * mm], st))
+    s.append(mktable(rows, [11 * mm, 36 * mm, 21 * mm, 23 * mm, 15 * mm, 15 * mm, 10 * mm,
+                            CW - 131 * mm], st))
     s.append(PageBreak())
     for tp in dm[TOP_KEY]:
         # 상세 페이지 상단 헤더는 기업명으로 표시한다(기술명이 길어 식별성이 떨어짐)

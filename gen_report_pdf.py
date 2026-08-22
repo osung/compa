@@ -54,6 +54,11 @@ ACCENT = colors.HexColor("#0E7C86"); MUTED = colors.HexColor("#6B7683"); HAIR = 
 HEADBG = colors.HexColor("#14315C"); HEADFG = colors.white; LABELBG = colors.HexColor("#EAF0F7")
 ZEBRA = colors.HexColor("#F5F8FC"); DISCBG = colors.HexColor("#FBEEED"); DISCBD = colors.HexColor("#C0392B")
 
+def _hx(c):
+    """reportlab 색 → '#rrggbb'. 인라인 마크업(<font color=…>)에 상수를 그대로 쓰기 위한 것.
+    색을 문자열로 박아 두면 테마를 갈아도 그 자리만 옛 색으로 남는다."""
+    return "#" + c.hexval()[2:]
+
 # 과제 상세 정보표에서 제외할 항목 라벨(gen_report.OMIT_INFO_FIELDS 와 같은 역할, 기본 비어 있음)
 OMIT_INFO_FIELDS = set()
 # 상세(TOP) 페이지 상단 배지 문구. 수요 단위가 아닌 판형(기업 단위 등)에서는 교체한다.
@@ -185,9 +190,13 @@ def mktable(data, widths, style):
     t = Table(data, colWidths=widths); t.setStyle(TableStyle(style)); return t
 
 def section_label(text, before=10, after=5, size=13.5):
+    # keepWithNext: 제목만 페이지 끝에 남고 표가 다음 장으로 넘어가는 것을 막는다.
+    # 강조색은 상수를 쓴다(테마 교체 시 함께 바뀌어야 한다).
     st = ParagraphStyle("sl", fontName="Sans-B", fontSize=size, textColor=NAVY,
-                        leading=size * 1.3, spaceBefore=before, spaceAfter=after)
-    return Paragraph(f'<font color="#0E7C86">▍</font> {esc(text)}', st)
+                        leading=size * 1.3, spaceBefore=before, spaceAfter=after,
+                        keepWithNext=1)
+    bar = f'#{ACCENT.hexval()[2:]}'
+    return Paragraph(f'<font color="{bar}">▍</font> {esc(text)}', st)
 
 def cover():
     story.append(Spacer(1, 34 * mm))
@@ -230,8 +239,8 @@ def intro_toc(by_field):
     for ln in ["수요 정보 — 기업명 · 수요기술 내용 · 수요기술 사양",
                "최종 추천 과제 Top 5 — 순위 · 과제명 · 수행기관 · 과제수행년도 · 매칭 근거",
                "추천 과제별 상세 정보표 및 상세 매칭 근거 — 연관성 · 수요기술 사양 적합성 · 추천 과제의 우수성 · 유사 사례 및 실적"]:
-        story.append(Paragraph(f'<font name="Sans-B" color="#0E7C86">· </font>'
-                               f'<font name="Serif" color="#1B2430">{esc(ln)}</font>',
+        story.append(Paragraph(f'<font name="Sans-B" color="{_hx(ACCENT)}">· </font>'
+                               f'<font name="Serif" color="{_hx(INK)}">{esc(ln)}</font>',
                                ParagraphStyle("b", fontSize=10, leading=15, leftIndent=14, spaceAfter=3)))
     story.append(section_label("목차", before=16))
     def pg(v): return str(v) if v else "··"
@@ -276,8 +285,9 @@ def chapter(no, f, ks):
 
 def demand_block(k, dm, title=None):
     """title 미지정이면 수요기술명을 제목으로(기본)."""
-    badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="#0E7C86"> 수요 {esc(k)} </font>'
-             f'  <font name="Sans-B" color="#14315C" size="14">{esc(title or dm["수요기술명"])}</font>')
+    badge = (f'<font name="Sans-B" color="#FFFFFF" backColor="{_hx(ACCENT)}"> 수요 {esc(k)} </font>'
+             f'  <font name="Sans-B" color="{_hx(NAVY)}" size="14">'
+             f'{esc(title or dm["수요기술명"])}</font>')
     off = pdfmetrics.stringWidth(f" 수요 {k} ", "Sans-B", 14) + pdfmetrics.stringWidth("  ", "Sans-B", 14)
     h2p = Paragraph(badge, ParagraphStyle("h2", fontName="Sans-B", fontSize=14, leading=20,
                     spaceAfter=5, leftIndent=off, firstLineIndent=-off))  # 배지+간격 실측폭 내어쓰기
@@ -309,8 +319,8 @@ def demand_block(k, dm, title=None):
 
 def top_detail(tp, dk_no, dk_name):
     pid = str(tp["과제고유번호"]); ex = pidf.get(pid, {})
-    title = (f'<font name="Sans-B" color="#FFFFFF" backColor="#14315C"> TOP {tp["rank"]} </font>'
-             f'  <font name="Sans-B" color="#1B2430" size="12.5">{esc(tp["과제명"])}</font>')
+    title = (f'<font name="Sans-B" color="#FFFFFF" backColor="{_hx(NAVY)}"> TOP {tp["rank"]} </font>'
+             f'  <font name="Sans-B" color="{_hx(INK)}" size="12.5">{esc(tp["과제명"])}</font>')
     off = pdfmetrics.stringWidth(f" TOP {tp['rank']} ", "Sans-B", 12.5) + pdfmetrics.stringWidth("  ", "Sans-B", 12.5)
     titlep = Paragraph(title, ParagraphStyle("h3", fontName="Sans-B", fontSize=12.5, leading=17,
                        spaceAfter=3, leftIndent=off, firstLineIndent=-off))  # 배지+간격 실측폭 내어쓰기
@@ -343,13 +353,13 @@ def top_detail(tp, dk_no, dk_name):
         st.append(("BACKGROUND", (2, -1), (3, -1), colors.white))
     block.append(mktable(rows, [LW, VW, LW, VW], st))
     block.append(Spacer(1, 9))                    # 과제설명(정보표)↔적합성 판단: 여유 ↑
-    block.append(Paragraph(f'<font name="Sans-B" color="#FFFFFF" backColor="#2C5FA0"> 적합성 판단 </font>'
-                           f'  <font name="Sans-B" color="#1B2430" size="9.5">{esc(tp.get("판단근거",""))}</font>',
+    block.append(Paragraph(f'<font name="Sans-B" color="#FFFFFF" backColor="{_hx(BLUE)}"> 적합성 판단 </font>'
+                           f'  <font name="Sans-B" color="{_hx(INK)}" size="9.5">{esc(tp.get("판단근거",""))}</font>',
                            ParagraphStyle("fit", fontSize=9.5, leading=14, spaceAfter=4)))
     block.append(section_label("상세 매칭 근거", before=9, after=3, size=10.5))
     for tt, body in split_sections(tp.get("추천근거_상세", "")):
-        block.append(Paragraph(f'<font name="Sans-B" color="#2C5FA0">[{esc(tt)}]</font>  '
-                               f'<font name="Serif" color="#1B2430">{esc(body)}</font>',
+        block.append(Paragraph(f'<font name="Sans-B" color="{_hx(BLUE)}">[{esc(tt)}]</font>  '
+                               f'<font name="Serif" color="{_hx(INK)}">{esc(body)}</font>',
                                ParagraphStyle("sec", fontSize=9, leading=13.5, alignment=TA_JUSTIFY, spaceAfter=4)))
     story.append(KeepTogether(block))
     # ---- 특허 실적: 등록 우선, 출원정보 병기. 다년도 전 연도 포함. 없으면 '없음' 표기 ----

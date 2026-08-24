@@ -8,6 +8,9 @@
     (match_meditek_supply._first_line 수정 → LABEL_LIKE/최소 길이 검사로 고정)
   · 공급기관별 요약표의 특허 합계가 행 기준으로 중복 계산돼 본문 특허 실적과 어긋난 문제
     (과제 단위 집계로 수정 → 합계 일치 검사로 고정)
+  · 근거문의 '특허 N건 · 논문 N건' 이 같은 페이지 실적 표와 어긋난 문제
+    (모델이 프롬프트의 건수 대신 인용 목록 길이를 세어 적음 → _regen_counts.py 로 교정,
+     실적 목록 대조 검사로 고정)
   · 제출 원문의 표기 오류가 그대로 실리던 문제
     (report_text_fix 적용 → 잔존 결함 패턴 검사로 고정)
   · 유망성 점수·적합도 수치·매칭 기준 표현이 새는지 (보고서 규칙)
@@ -53,6 +56,10 @@ TEXT_DEFECTS = [
     (r",[ \t]*,", "중복 쉼표"),
     (r"[)\]][ \t]+(?:은|는|가|을|를|의|와|과|로|도)(?=[\s,.]|$)", "괄호 뒤 조사 분리"),
     (r"간겅|감연", "확인된 오탈자"),
+    # 35B 스트리밍 출력에서 한 글자가 U+FFFD 로 깨진 채 실린 적이 있다(v33 위드세이브
+    # TOP1 '바이�프린팅' 2곳). 렌더링본에서는 notdef 상자로 찍히고, 특허명이 실적 목록과
+    # 한 글자 달라져 인용 표기(『 』)까지 어긋난다 → _fix_glyph.py 로 복원.
+    (r"�", "치환 문자(U+FFFD)"),
 ]
 import explain_meditek_top10 as _xp
 import meditek_cite_mark as _cite
@@ -60,6 +67,8 @@ import meditek_cite_mark as _cite
 SEP = "\n\uFFFF\n"   # 필드 이어 붙일 때 쓰는 경계 표시(패턴이 넘어가지 않게)
 # 표시용 기술명이 이것뿐이면 도출 실패로 본다(제출 서식의 항목 라벨)
 LABEL_LIKE = {"기술명", "수요기술명", "개요", "기업 개요", "기술 개요", "기업개요", "기술개요"}
+# '특허 N건' 앞에 이 말이 있으면 과제 실적이 아니라 기업 보유 건수를 가리킨다
+CNT_OWN = re.compile(r"당사|자사|이 기업|보유")
 
 
 def _pdf_text(path):
@@ -139,6 +148,27 @@ def main():
     badp = [t["과제고유번호"] for t in tops
             if t["특허건수"] != len(PAT.get(t["과제고유번호"], []))]
     chk("표 특허건수 == 특허 실적 목록", not badp, f"불일치 {badp[:3]}")
+    # 근거문이 인용한 건수도 실적 목록과 맞아야 한다. 프롬프트는 patent_list_count·
+    # paper_list_count 로 정확한 건수를 주는데(compa_match:719-720) 모델이 그 값 대신
+    # 인용 특허 목록의 길이를 세어 적는 일이 있다 — v33 에서 2문장·3개 수치가 어긋났고
+    # (엠비디 TOP5 '논문 1건과 특허 1건' → 실제 특허 2·논문 0, 세로메드 TOP1 '특허 1건'
+    # → 실제 2), 같은 페이지의 실적 표와 정면으로 모순됐다. _regen_counts.py 로 교정.
+    cnt_bad = []
+    for v in J.values():
+        for t in v[TOP_KEY]:
+            pid = t["과제고유번호"]
+            real = {"특허": len(PAT.get(pid, [])), "논문": len(PAP.get(pid, []))}
+            for f in ("판단근거", "추천근거_상세"):
+                s = t.get(f, "") or ""
+                for m in re.finditer(r"(특허|논문)\s*(\d+)\s*건", s):
+                    # 기업이 보유한 특허 건수를 인용한 문장은 과제 실적이 아니다
+                    if CNT_OWN.search(s[max(0, m.start() - 12):m.start()]):
+                        continue
+                    if int(m.group(2)) != real[m.group(1)]:
+                        cnt_bad.append((v["기업명"], t["rank"], m.group(0),
+                                        f"실제 {real[m.group(1)]}건"))
+    chk("근거문 실적 건수 == 실적 목록", not cnt_bad,
+        f"불일치 {len(cnt_bad)}건 {cnt_bad[:3]}")
 
     # ---- 표시용 기술명(과거 '1'·'기술명' 으로 찍힌 회귀 방지) ----
     bad = []
@@ -198,7 +228,11 @@ def main():
             chk(f"{label}: {lab} 비노출", not m, f"{len(m)}건 {sorted(set(map(str, m)))[:3]}")
         tot = sum(len(PAT.get(p, [])) for p in pids)
         chk(f"{label}: 요약표 특허 합계 == 과제별 합계", f"{tot}건" in txt, f"{tot}건")
-        chk(f"{label}: 깨진 글리프 없음", "□" not in txt, f"□ {txt.count('□')}개")
+        # 없는 글리프는 매체마다 다르게 나온다 — DOCX 추출은 U+FFFD 그대로, PDF 추출은
+        # 폰트 서브셋에 매핑이 없어 U+0000 으로 나온다(v33 은 □ 만 봐서 통과했다).
+        glyph = {c: txt.count(c) for c in ("□", "�", "\x00") if c in txt}
+        chk(f"{label}: 깨진 글리프 없음", not glyph,
+            " · ".join(f"U+{ord(c):04X} {n}개" for c, n in glyph.items()) or "0개")
         chk(f"{label}: 수요기술·보유기술 구분 표기", "확보를 희망하는 기술" in txt
             and "이미 보유한 기술" in txt,
             f"수요 {txt.count('확보를 희망하는 기술')}회 · 보유 {txt.count('이미 보유한 기술')}회")

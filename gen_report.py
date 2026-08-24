@@ -75,8 +75,56 @@ def load_data():
     pidf = json.load(open(os.path.join(SCRATCH, "pid_fields.json"), encoding="utf-8"))
     return demands, fields, pidf
 
+import meditek_cite_mark as _cite      # noqa: E402
+
 _PP = os.path.join(SCRATCH, "pid_patents.json")
 PATENTS = json.load(open(_PP, encoding="utf-8")) if os.path.exists(_PP) else {}
+_PN = os.path.join(SCRATCH, "pid_partners.json")
+# 공동참여기관 — 있는 과제만 정보표에 행을 넣는다(추천 과제 기준 커버리지 약 21%).
+# 없는 과제에 '-' 행을 넣으면 대부분이 빈 행이 되어 지면만 먹는다.
+PARTNERS = json.load(open(_PN, encoding="utf-8")) if os.path.exists(_PN) else {}
+_PA = os.path.join(SCRATCH, "pid_papers.json")
+PAPERS = json.load(open(_PA, encoding="utf-8")) if os.path.exists(_PA) else {}
+# 근거문 안의 특허명·논문명을 본문과 구분해 칠하는 색(APOLLO 계열 강조)
+# 논문 표를 낼 과제(단계 도입용). 빈 값이면 전체 과제에 낸다.
+PAPER_PIDS = {x.strip() for x in os.environ.get("COMPA_PAPER_PIDS", "").split(",")
+              if x.strip()}
+# 논문은 과제당 최신 이 건수까지 싣고, 근거문이 인용한 논문은 상한과 무관하게 반드시
+# 넣는다(강조된 제목을 같은 페이지에서 확인할 수 있어야 한다). 0 이면 전건.
+PAPER_MAX = int(os.environ.get("COMPA_PAPER_MAX", "10"))
+_PAPER_CITED = None            # {pid: {인용된 논문명(정규화)}} — 첫 사용 때 계산
+
+
+def paper_cited():
+    """전 기업 근거문에서 인용된 논문 집합. 기업별로 따로 구하면 같은 과제가
+    기업마다 다른 표를 보이므로 반드시 합집합으로 한 번만 만든다.
+    호출부에서 넘기지 않아도 되게 보고서 입력 JSON 을 직접 읽는다."""
+    global _PAPER_CITED
+    if _PAPER_CITED is None:
+        try:
+            dm = json.load(open(os.environ.get(
+                "COMPA_REPORT_JSON", os.path.join(HERE, "COMPA_통합best.json")),
+                encoding="utf-8"))
+        except Exception as e:
+            print("논문 인용 집계 생략(입력 JSON 읽기 실패):", e)
+            dm = {}
+        _PAPER_CITED = _cite.cited_paper_map(dm, PATENTS, PAPERS)
+    return _PAPER_CITED
+
+
+def paper_caption(n_show):
+    """논문 표 제목 — 특허 표와 같은 형식(수록 건수)."""
+    return f"논문 실적  ({n_show}건)"
+
+
+def paper_note(n_all, n_show):
+    """표를 잘라 실을 때 표 **아래**에 붙일 안내. 전건이면 빈 문자열."""
+    if n_show >= n_all:
+        return ""
+    return (f"※ 지면 관계상 총 {n_all}건 중 최신 및 본문 인용 논문 {n_show}건만 "
+            "수록하였음.")
+CITE_PAT_COLOR = "0B4F8A"
+CITE_PAP_COLOR = "1F6F52"
 
 # 배지+간격 실측폭(pt) — 배지 뒤 제목의 내어쓰기(hanging indent)를 정확히 맞추기 위함
 _NB_FONT = os.path.join(SCRATCH, "fonts", "NotoSansKR-Bold.ttf")
@@ -644,6 +692,16 @@ def build_top_detail(doc, tp, pidf):
                 shade_cell(lc, LABEL_BG)
                 fill_cell(lc, label, D_FONT, bold=True, color=NAVY); cell_indent(lc, 80)
             fill_cell(vc, str(val), D_FONT)
+    # 공동참여기관 — 값이 길어 4열에 안 들어가므로 전폭 한 행으로 붙인다
+    parts = PARTNERS.get(str(pid), [])
+    if parts:
+        cells = t.add_row().cells
+        lc = cells[0]
+        cells[1].merge(cells[3])                  # 값 칸을 오른쪽 끝까지 병합
+        cell_vcenter(lc); cell_vcenter(cells[1])
+        shade_cell(lc, LABEL_BG)
+        fill_cell(lc, "공동참여기관", D_FONT, bold=True, color=NAVY); cell_indent(lc, 80)
+        fill_cell(cells[1], " · ".join(x["기관명"] for x in parts), D_FONT)
     table_fixed(t, [2300, 2020, 2300, 2020])  # 라벨열=최장 라벨'과학기술표준분류(중)' 한 줄 최소폭
 
     # 적합성 판단 (강조 라인) — 정보표와 간격 ↑
@@ -659,7 +717,15 @@ def build_top_detail(doc, tp, pidf):
         p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         p.paragraph_format.space_after = Pt(SEC_AFTER); p.paragraph_format.line_spacing = D_LS
         style_run(p.add_run(title.strip("[]") + "  "), D_FONT, bold=True, color=BLUE)
-        style_run(p.add_run(body), D_FONT, color=INK, family=SERIF)
+        # 특허명·논문명은 본문과 구분해 진한 강조색+굵게 (실제 성과 목록과 일치하는 구간만)
+        _pats = [x.get("특허명", "") for x in PATENTS.get(pid, [])]
+        _paps = [x.get("논문명", "") for x in PAPERS.get(pid, [])]
+        for seg, knd in _cite.mark(body, _pats, _paps):
+            if knd:
+                style_run(p.add_run(seg), D_FONT, bold=True, family=SERIF,
+                          color=CITE_PAT_COLOR if knd == "특허" else CITE_PAP_COLOR)
+            else:
+                style_run(p.add_run(seg), D_FONT, color=INK, family=SERIF)
 
     # ---- 특허 실적: 등록 우선, 출원정보 병기. 다년도 전 연도 포함. 없으면 '없음' 표기 ----
     pats = PATENTS.get(pid, [])
@@ -690,6 +756,39 @@ def build_top_detail(doc, tp, pidf):
                           color=(NAVY if (reg and v == pt["상태"]) else INK),
                           bold=(reg and v == pt["상태"]))
         table_fixed(t, [560, 2680, 1500, 460, 900, 1500, 900, 1180])
+
+    # ---- 논문 실적: 특허 표 바로 아래. 중요한 항목만(제목·학술지·주저자·연도·DOI) ----
+    # PAPER_PIDS 가 지정되면 그 과제만 논문 표를 낸다(단계 도입·검토용). 빈 값이면 전체.
+    paps_all = PAPERS.get(pid, [])
+    paps, n_all = _cite.pick_papers(
+        paps_all, paper_cited().get(str(pid), set()),
+        PAPER_MAX or len(paps_all))
+    if paps and (not PAPER_PIDS or str(pid) in PAPER_PIDS):
+        keep_next(para(doc, paper_caption(len(paps)), D_FONT + 1,
+                       bold=True, color=NAVY, before=11, after=3))
+        heads = ("논문명", "학술지명", "주저자", "게재년도", "DOI")
+        t = doc.add_table(rows=1, cols=len(heads))
+        table_grid(t, HAIR, 4, "all"); table_cellmar(t, 24, 24, 60, 60)
+        for c, txt in zip(t.rows[0].cells, heads):
+            shade_cell(c, HEAD_BG); cell_vcenter(c)
+            fill_cell(c, txt, 7.5, bold=True, color=HEAD_FG,
+                      align=WD_ALIGN_PARAGRAPH.CENTER)
+        for idx, pp in enumerate(paps):
+            row = t.add_row().cells
+            if idx % 2 == 1:
+                for c in row:
+                    shade_cell(c, ZEBRA)
+            vals = [pp.get("논문명", ""), pp.get("학술지명", ""), pp.get("주저자", ""),
+                    pp.get("게재년도", ""), pp.get("DOI", "")]
+            aligns = [None, None, WD_ALIGN_PARAGRAPH.CENTER,
+                      WD_ALIGN_PARAGRAPH.CENTER, None]
+            for c, v, al in zip(row, vals, aligns):
+                cell_vcenter(c)
+                fill_cell(c, str(v), 7.5, align=al, color=INK)
+        table_fixed(t, [3560, 2000, 1100, 620, 2400])
+        note = paper_note(n_all, len(paps))
+        if note:                        # 표 내부와 같은 글꼴·크기, 색만 낮춰 주석으로
+            para(doc, note, 7.5, color=MUTED, before=2, after=0)
 
 if __name__ == "__main__":
     build()

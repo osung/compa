@@ -16,7 +16,7 @@
                → 35B 키워드 추출 → pro-sroberta 임베딩
   ③ 1차선정  : 임베딩 코사인 유사도 + 과제 유망성점수의 가중합으로 후보 N건
   ④ 재랭킹   : 후보를 35B 로 0~100 채점(적합도) → 적합도 주도 가중합으로 최종 순위
-  ⑤ 근거     : 표용 한 문장(판단근거) + 4섹션 상세근거를 35B 로 생성
+  ⑤ 근거     : 표용 한 문장(판단근거) + 3섹션 상세근거를 35B 로 생성
                (텍스트는 전부 모델이 쓴다. 금지표현·유망성 차단은 explain_meditek_top10 재사용)
   ⑥ 산출     : <tag>_매칭.pkl / .xlsx (+ 보고서 입력 JSON) — 나중에 보고서 생성용
 
@@ -39,6 +39,8 @@ from sentence_transformers import SentenceTransformer
 import compa_match as cm
 import explain_meditek_top10 as xp
 import match_meditek_top10 as mt
+import meditek_patent_axis as pax
+import meditek_phase_merge as pmg
 import meditek_supply_orgs as so
 from rematch_filtered import ALLOW, EMB_FILE, YEAR_MIN
 
@@ -51,10 +53,30 @@ N_POOL = 1000              # 코사인 상위 풀(이 안에서 유사도 정규
 N_CAND = 60                # 1차선정 통과 후보 수(= LLM 재랭킹 대상)
 FINAL = 5                  # 기업별 최종 추천 수
 MIN_FIT = 40               # 적합도 하한(미달은 '보충'으로만 들어간다)
-# 1차선정 가중치(합 1.0) — 요구사항: 임베딩 유사도 + 과제 유망성
+# 연계유형을 순위에 반영하는 2단 구조.
+#   ① 적합도 채점은 후보 전체(N_CAND)에 그대로 걸어 척도를 흔들지 않는다
+#   ② 그중 상위 KIND_POOL 건만 유형을 판정하고
+#   ③ 유형 가중을 적용해 다시 정렬한 뒤 Top5 를 고른다
+# 유형을 채점 프롬프트에 함께 넣으면 같은 건의 적합도가 85→40 으로 흔들려(실측) 못 쓴다.
+# 가중은 적합도 약 5점 상당의 핸디캡이다 — 순위가 비슷할 때만 방향이 갈림길이 되고,
+# 명확히 더 나은 공동연구 건이 기술도입 건에 밀리지는 않는다.
+KIND_POOL = 15             # 유형 판정 대상(상위 후보 수)
+W_KIND_CO = 0.95           # 공동연구 가중(기술도입 = 1.00)
+# 1차선정 가중치 — 임베딩 유사도 + 과제 유망성 + 특허축
 W_COS, W_PROM_PRE = 0.75, 0.25
-# 재랭킹 가중치(합 1.0) — LLM 적합도가 순위를 주도한다
+# 재랭킹 가중치 — LLM 적합도가 순위를 주도한다
 W_FIT, W_COS_RE, W_PROM_RE = 0.70, 0.15, 0.15
+# 특허축(meditek_patent_axis) 가중 — 질의와 유사하고 권리가 살아 있는 특허를 **많이**
+# 가진 과제를 끌어올린다. 두 단계 모두에 넣는다. 1차선정에 넣지 않으면 그런 과제가
+# 애초에 후보(N_CAND)에 들어오지 못해 재랭킹이 손쓸 수 없다.
+# 가중치 합은 코드에서 정규화되므로(wsum/psum) 실효 비중은
+#   1차선정 유사도 0.625 · 유망성 0.208 · 특허 0.167
+#   재랭킹   적합도 0.648 · 유사도 0.139 · 유망성 0.139 · 특허 0.074
+# 재랭킹 가중을 0.12 로 두면 축이 적합도 10점 차이를 뒤집는다(적합도 10점 = 최종 6.25점,
+# 특허축 0.65 차 = 최종 7.0점). 실측에서 인재양성·기관지원 사업이 적합도 50 → 40 짜리
+# 추천을 밀어내고 3행 → 8행으로 늘었다. 유형 가중과 같은 '적합도 약 5점 상당' 수준으로
+# 낮춘다. 1차선정은 누가 채점 대상이 되는지만 정하므로 강하게 두어도 무해하다.
+W_PAT_PRE, W_PAT_RE = 0.20, 0.08
 QUERY_MIN = 40             # 질의 본문이 이보다 짧으면 경고만 남긴다(질의는 그대로 사용)
 # 추천이 한 건도 없으면 최소 1건을 보장할 공급기관. 점수순 선정만으로는 과제 수가 적은
 # 기관이 통째로 빠지는데, 행사 운영상 기관별 미팅 기회를 보장해야 할 때 쓴다.
@@ -481,9 +503,29 @@ def keywords_of(u):
 
 
 # ---------------------------------------------------------------- 코퍼스
-def patent_counts(src=PATENT_PKL):
-    """nice_patent pkl → {과제고유번호: 특허 건수}. 보고서 특허 표와 같은 소스."""
+# 코퍼스에 넣을 특허의 상태 — 출원 계류(공개) 또는 등록만 인정한다.
+# 거절·취하·포기는 권리가 성립하지 않았고 소멸은 권리가 끝났다. 그런 특허만 가진
+# 과제는 기술이전 협의 대상이 될 수 없으므로 코퍼스에서 뺀다.
+#   등록 1.00 / 공개 0.45  → 인정      거절 0.10 / 취하·포기 0.05 / 소멸 0.55 → 배제
+# (소멸의 법적상태_score 가 0.55 로 공개보다 높지만 권리는 이미 끝났다. 점수가 아니라
+#  상태명으로 판정해야 하는 이유다.)
+ALIVE_STATES = ("등록", "공개")
+
+
+def patent_counts(src=PATENT_PKL, alive_only=True):
+    """nice_patent pkl → {과제고유번호: 특허 건수}. 보고서 특허 표와 같은 소스.
+
+    alive_only=True 면 상태가 ALIVE_STATES 인 특허만 센다.
+    """
     df = pd.read_pickle(src)
+    if alive_only:
+        col = "특허등록상태명"
+        if col not in df.columns:
+            raise SystemExit(f"[중단] {src} 에 {col} 컬럼이 없어 상태 판정 불가")
+        n0 = len(df)
+        df = df[df[col].astype(str).str.strip().isin(ALIVE_STATES)]
+        log(f"· 특허 상태 필터: {n0} → {len(df)}건 "
+            f"(인정 {'/'.join(ALIVE_STATES)} · 배제 거절·취하·포기·소멸)")
     cnt = {}
     for v in df["과제번호"].values:
         pids = (v if isinstance(v, (list, tuple, set, np.ndarray))
@@ -496,9 +538,138 @@ def patent_counts(src=PATENT_PKL):
     return cnt
 
 
+def patent_sets(src=PATENT_PKL, alive_only=True):
+    """{과제고유번호: {특허출원번호…}} — 연차 통합 시 합집합을 내려면 건수가 아니라
+    출원번호 집합이 필요하다(연차마다 같은 특허가 다시 실린다)."""
+    df = pd.read_pickle(src)
+    if alive_only:
+        df = df[df["특허등록상태명"].astype(str).str.strip().isin(ALIVE_STATES)]
+    out = {}
+    for v, no in zip(df["과제번호"].values, df["특허출원번호"].values):
+        pids = (v if isinstance(v, (list, tuple, set, np.ndarray))
+                else re.findall(r"\d{6,}", str(v)))
+        k = str(no).strip()
+        for q in pids:
+            q = str(q).strip()
+            if q:
+                out.setdefault(q, set()).add(k)
+    del df
+    return out
+
+
+def promising_patent_sets(min_score=80.0, states=("등록",), src=PATENT_PKL):
+    """{과제고유번호: {유망 등록특허 출원번호…}} — 연차 통합 시 합집합용."""
+    df = pd.read_pickle(src)
+    df = df[df["특허등록상태명"].astype(str).str.strip().isin(states)]
+    df = df[pd.to_numeric(df["유망성점수"], errors="coerce") >= min_score]
+    out = {}
+    for v, no in zip(df["과제번호"].values, df["특허출원번호"].values):
+        pids = (v if isinstance(v, (list, tuple, set, np.ndarray))
+                else re.findall(r"\d{6,}", str(v)))
+        k = str(no).strip()
+        for q in pids:
+            q = str(q).strip()
+            if q:
+                out.setdefault(q, set()).add(k)
+    del df
+    return out
+
+
+def promising_patent_counts(min_score=80.0, states=("등록",), src=PATENT_PKL):
+    """{과제고유번호: 유망 등록특허 건수}.
+
+    '유망 특허' = 상태가 등록이고 특허 유망성점수가 min_score 이상.
+    등록 특허의 유망성점수 분포는 코퍼스 실측 P25 82.3 · P50 88.5 이므로 80은
+    등록 특허의 하위 4분위를 걸러내는 선이다.
+    이 값은 **과제명 예외 판정에만** 쓰고 매칭 점수에는 넣지 않는다. 점수에 넣으면
+    합성 유망성점수 안의 모과제유망성이 과제 유망성 축과 이중 계산된다.
+    """
+    df = pd.read_pickle(src)
+    need = {"과제번호", "특허등록상태명", "유망성점수"}
+    if not need <= set(df.columns):
+        raise SystemExit(f"[중단] {src} 에 없는 컬럼: {sorted(need - set(df.columns))}")
+    df = df[df["특허등록상태명"].astype(str).str.strip().isin(states)]
+    df = df[pd.to_numeric(df["유망성점수"], errors="coerce") >= min_score]
+    cnt = {}
+    for v in df["과제번호"].values:
+        pids = (v if isinstance(v, (list, tuple, set, np.ndarray))
+                else re.findall(r"\d{6,}", str(v)))
+        for q in pids:
+            q = str(q).strip()
+            if q:
+                cnt[q] = cnt.get(q, 0) + 1
+    del df
+    return cnt
+
+
+# ---- 과제명 정상성 -----------------------------------------------------------
+# 과제명이 연구 주제가 아니라 기관·조직 이름이거나 인력양성·기관지원 사업 이름인
+# 과제가 코퍼스에 섞여 있다(예: '충북대학교', '생태환경독성연구소',
+# '지역지능화혁신인재양성'). 이런 과제는 이전받을 기술이 특정되지 않아 기술이전
+# 보고서의 추천 대상이 될 수 없다. 게다가 산하 연구실 특허를 대량 누적해(최대 153건)
+# 특허축에 유리해서 정상 과제를 밀어낸다.
+#   ① 기관·조직명   과제명이 기관 단위 명사로 끝난다. '연구실'은 제외한다 —
+#                   '간-대장 상통 대사항상성 연구실'처럼 주제를 담은 정상 과제명이다.
+#   ② 인력양성 사업  인재양성·대학원지원·창업선도 등 사업 이름
+#   ③ 주제 없는 단문 12자 이하이면서 연구 주제 어휘가 하나도 없다
+#                   ('차세대 창의약학' 배제 / '암화 방어기전 연구'는 '연구'가 있어 유지)
+# 실측: 코퍼스 1,731건 중 46건(2.7%)이 걸리고 오탐은 없었다.
+NAME_ORG_TAIL = re.compile(
+    r"(대학교|대학|산학협력단|기술지주|의료원|병원|연구원|연구소|센터|재단|공단|공사"
+    r"|사업단|본부)$")
+NAME_PROGRAM = re.compile(
+    r"인재양성|인력양성|대학원지원|창업선도|혁신인재|리더스|육성사업|지원사업"
+    r"|양성사업|장학|교육과정")
+NAME_SUBJ = re.compile(
+    r"개발|연구|규명|구축|평가|분석|진단|치료|합성|설계|제작|검증|응용|기반|이용"
+    r"|활용|시스템|플랫폼|기술|공정|소재|모델|탐색|발굴|측정|제어|예측")
+NAME_MIN = 12              # 이 길이 이하에서만 '주제 어휘 없음'을 배제 사유로 본다
+# 예외 조항 — 과제명이 연구 주제가 아니어도 아래 둘을 **모두** 충족하면 남긴다.
+# 사업 단위 묶음이라도 실제로 이전할 만한 기술이 확인되는 경우를 버리지 않기 위한 것이다.
+#   ① LLM 적합도 >= NAME_EXEMPT_FIT
+#   ② 등록 상태이고 유망성점수 >= NAME_PROMISE_MIN 인 특허를 1건 이상 보유
+# 예외 판정에 적합도가 필요해서 과제명 검사는 코퍼스에서 배제하지 않고 표시만 하고,
+# LLM 채점이 끝난 뒤 최종 선정 단계에서 걸러낸다.
+# 실측(코퍼스 1,731건 중 과제명 비정상 46건): 적합도 80 이상 6건 → 그중 유망 등록특허를
+# 가진 5건이 남고, 등록특허가 없는 '2024년도 대학기술경영촉진사업_충북대학교'만 빠진다.
+# 예외를 절대 인정하지 않는 과제명 — **기관 이름 단독**('충북대학교', '경북대학교').
+# 이름에 연구 주제가 한 조각도 없어서, 적합도가 높아도 무엇을 이전받는지 특정할 수 없다.
+# '연구소'·'센터'로 끝나는 이름은 제외한다 — '약학기술연구소', '나노센서 연구소'처럼
+# 연구 영역을 담고 있어 상담 단서가 된다. 공백 없는 한 낱말만 본다.
+NAME_ORG_ONLY = re.compile(
+    r"^[가-힣A-Za-z0-9()]+(대학교|대학|연구원|의료원|병원|산학협력단|기술지주|재단"
+    r"|공단|공사)$")
+NAME_EXEMPT_FIT = 80       # 예외 인정 적합도 하한
+NAME_PROMISE_MIN = 80      # '유망 특허' 판정 기준(등록 특허 유망성점수 실측 P25 = 82.3)
+NAME_EXTRA = 15            # 과제명 비정상 과제를 후보 정원(N_CAND) 밖에서 추가 채점할 수
+# 근거문에 인용할 특허 수 — 질의 유사도 P90 을 넘는 특허만, 유사도 상위 이 개수까지
+# 프롬프트에 넣는다. 넘는 특허가 없으면 빈 목록이 되고 프롬프트 규칙상 언급하지 않는다.
+CITE_PATENTS = 3
+
+
+def org_only_name(name):
+    """과제명이 기관 이름 단독인가 — 이 경우 예외(적합도·유망특허)를 인정하지 않는다."""
+    return bool(NAME_ORG_ONLY.match(re.sub(r"\s+", "", str(name)).strip()))
+
+
+def bad_project_name(name):
+    """과제명이 연구 주제가 아닌 경우 → (True, 사유). 정상이면 (False, "")."""
+    t = re.sub(r"\s+", " ", str(name)).strip()
+    if org_only_name(t):
+        return True, "기관명 단독"
+    if NAME_ORG_TAIL.search(t):
+        return True, "기관·조직명"
+    if NAME_PROGRAM.search(t):
+        return True, "인력양성·기관지원 사업"
+    if len(t) <= NAME_MIN and not NAME_SUBJ.search(t):
+        return True, "연구주제 없는 단문"
+    return False, ""
+
+
 def build_corpus(sup_names, year_min=YEAR_MIN, patent_src="nice", allow_subject=False,
-                 field="의료제약"):
-    """공급기관 수행 ∧ 최근 제출 ∧ 특허 1건 이상인 과제 코퍼스."""
+                 field="의료제약", patent_status="생존", check_name=True,
+                 promise_min=NAME_PROMISE_MIN, merge_phase=True):
+    """공급기관 수행 ∧ 최근 제출 ∧ **생존 특허**(출원 계류 또는 등록) 1건 이상인 코퍼스."""
     t0 = time.time()
     log(f"· 과제 임베딩 로드… ({EMB_FILE})")
     pdf = pd.read_pickle(EMB_FILE)
@@ -522,8 +693,11 @@ def build_corpus(sup_names, year_min=YEAR_MIN, patent_src="nice", allow_subject=
         "— export_supply_orgs.py 의 '제외검토' 시트 참조")
     log(f"· 공급기관 {len(resolved)}곳 → 과제수행기관명 해석")
     ok_orgs = set()
+    resolved_rev = {}                 # 과제수행기관명 → 공급기관(연차 통합 키에 쓴다)
     for name, (hit, memo) in resolved.items():
         ok_orgs.update(hit)
+        for h in hit:
+            resolved_rev.setdefault(h, name)
         log(f"    {name:<22} 기관 {len(hit):>2}개  [{memo}]"
             + (f" ← {', '.join(hit[:5])}{' …' if len(hit) > 5 else ''}" if hit
                else "  ← 코퍼스에 수행과제 없음"))
@@ -534,7 +708,7 @@ def build_corpus(sup_names, year_min=YEAR_MIN, patent_src="nice", allow_subject=
     pat_meta = np.array([mt._to_int(pmeta.get(p, {}).get("특허건수")) for p in pid_all],
                         dtype=np.int32)
     log(f"· 특허 성과 연계 로드… ({PATENT_PKL})")
-    pcnt = patent_counts()
+    pcnt = patent_counts(alive_only=(patent_status == "생존"))
     pat_nice = np.array([pcnt.get(p, 0) for p in pid_all], dtype=np.int32)
 
     m = m_org & m_year
@@ -567,7 +741,7 @@ def build_corpus(sup_names, year_min=YEAR_MIN, patent_src="nice", allow_subject=
         for w, n in _C(why).most_common(6):
             log(f"      제외 사유 {n:>4}건  {w}")
     idx = np.flatnonzero(m)
-    log(f"  코퍼스 확정 {len(idx)}건 (특허 기준 '{patent_src}'"
+    log(f"  코퍼스 확정 {len(idx)}건 (특허 기준 '{patent_src}·{patent_status}'"
         + (f" · 분야 '{field}'" if field and field != "전체" else "") + ")")
     if not len(idx):
         raise SystemExit("[중단] 코퍼스가 비었습니다")
@@ -588,8 +762,79 @@ def build_corpus(sup_names, year_min=YEAR_MIN, patent_src="nice", allow_subject=
         "resolved": {k: v[0] for k, v in resolved.items()},
         "pmeta": pmeta,
     }
-    M = np.vstack([np.asarray(e, dtype=np.float32) for e in sub["norm_embed"].values])
-    c["M"] = M / np.linalg.norm(M, axis=1, keepdims=True)
+    # 임베딩은 통합 필터보다 먼저 만든다 — 통합 시 같은 마스크로 함께 걸러야 한다.
+    _M = np.vstack([np.asarray(e, dtype=np.float32) for e in sub["norm_embed"].values])
+    c["M"] = _M / np.linalg.norm(_M, axis=1, keepdims=True)
+    # ---- 다년차 과제 통합 --------------------------------------------------
+    # 같은 과제의 연차 보고를 한 건으로 묶고, 특허는 전 연차 합집합을 쓴다.
+    c["members"] = {str(p): [str(p)] for p in c["pid"]}
+    c["rep_of"] = {str(p): str(p) for p in c["pid"]}
+    if merge_phase:
+        sup_of = np.array([resolved_rev.get(o, o) for o in c["org"]])
+        rep_of, members = pmg.build_groups(c["pid"], c["pname"], sup_of, c["year"])
+        st = pmg.stats(members)
+        log(f"· 다년차 과제 통합: {st['rows']}건 → {st['groups']}건 "
+            f"(2연차 이상 {st['multi']}개 그룹 · 통합으로 {st['collapsed']}건 감소 · "
+            f"최대 {st['max_size']}연차)")
+        keep = np.array([str(p) in members for p in c["pid"]])
+        # isinstance(v, np.ndarray) 로 걸러선 안 된다 — pid·pname·pdesc·subject 는
+        # pandas 문자열 컬럼의 .values 라서 ExtensionArray 이고 ndarray 가 아니다.
+        # 길이만 맞으면 불리언 마스크로 자른다(dict 는 제외).
+        for k, v in list(c.items()):
+            if (not isinstance(v, dict) and hasattr(v, "__len__")
+                    and len(v) == len(keep)):
+                c[k] = v[keep]
+        if len(c["pid"]) != int(keep.sum()):
+            raise SystemExit(f"[중단] 연차 통합 필터 적용 실패: pid {len(c['pid'])} "
+                             f"≠ {int(keep.sum())}")
+        c["members"], c["rep_of"] = members, rep_of
+        # 특허·논문: 특허는 전 연차 출원번호 합집합, 논문·과제메타 특허는 연차 최대값
+        psets = patent_sets(alive_only=(patent_status == "생존"))
+        merged, pm_max, pap_max = [], [], []
+        for p in c["pid"]:
+            mem = members[str(p)]
+            u = set()
+            for q in mem:
+                u |= psets.get(q, set())
+            merged.append(len(u))
+            pm_max.append(max((mt._to_int(pmeta.get(q, {}).get("특허건수")) for q in mem),
+                              default=0))
+            pap_max.append(max((mt._to_int(pmeta.get(q, {}).get("논문건수")) for q in mem),
+                               default=0))
+        before = int(c["pat"].sum())
+        c["pat"] = np.array(merged, dtype=np.int32)
+        c["pat_meta"] = np.array(pm_max, dtype=np.int32)
+        c["pap"] = np.array(pap_max, dtype=np.int32)
+        c["nphase"] = np.array([len(members[str(p)]) for p in c["pid"]], dtype=np.int32)
+        c["phase_pids"] = np.array([",".join(members[str(p)]) for p in c["pid"]])
+        log(f"  특허 합집합 적용: 대표 행 기준 {before}건 → {int(c['pat'].sum())}건 "
+            f"(중위 {int(np.median(c['pat']))}건 · 최대 {int(c['pat'].max())}건)")
+        log(f"  통합된 과제 {int((c['nphase'] > 1).sum())}건 · 코퍼스 {len(c['pid'])}건")
+    else:
+        c["nphase"] = np.ones(len(c["pid"]), dtype=np.int32)
+        c["phase_pids"] = np.array([str(p) for p in c["pid"]])
+
+    # 과제명 정상성은 **배제하지 않고 표시만** 한다. 예외 판정(적합도·유망특허)이
+    # LLM 채점 이후에만 가능하므로, 후보에는 넣고 최종 선정에서 건너뛴다.
+    nb = np.array([bad_project_name(x) for x in c["pname"]], dtype=object)
+    c["namebad"] = np.array([bool(x[0]) for x in nb])
+    c["namewhy"] = np.array([x[1] for x in nb])
+    if check_name and c["namebad"].any():
+        from collections import Counter as _C2
+        log(f"· 과제명 정상성: {int(c['namebad'].sum())}건 표시"
+            f"(연구 주제가 아닌 과제 — 예외 조건 미충족 시 최종 선정에서 제외)")
+        for w, n in _C2(c["namewhy"][c["namebad"]]).most_common():
+            log(f"      {w} {n}건")
+        for nmx, n in _C2(c["pname"][c["namebad"]]).most_common(6):
+            log(f"        · {str(nmx)[:44]}{f' ×{n}' if n > 1 else ''}")
+    log(f"· 유망 등록특허 집계… (등록 ∧ 유망성 ≥ {promise_min})")
+    pms = promising_patent_sets(promise_min)
+    c["pat_promise"] = np.array(
+        [len(set().union(*[pms.get(q, set()) for q in c["members"].get(str(p), [str(p)])]))
+         for p in c["pid"]], dtype=np.int32)
+    log(f"  유망 등록특허 1건 이상 과제 {int((c['pat_promise'] >= 1).sum())}"
+        f"/{len(c['pid'])}건")
+    c["check_name"] = bool(check_name)
     del pdf, sub
     log(f"  코퍼스 준비 완료 ({time.time()-t0:.0f}s) · "
         f"기관 {len(set(c['org']))}곳 · 특허 중위 {int(np.median(c['pat']))}건 · "
@@ -858,7 +1103,12 @@ def _mr_sys(kind):
         "기여 가능성으로 표현한다.\n"
         "4) 문장 하나만 출력. 따옴표·머리기호·부연 금지.\n"
         "5) few-shot 은 방향과 톤 참고용이며 고유명사를 재사용하지 않는다.\n"
-        "6) " + xp._BAN_RULE)
+        "6) [과제 보유 특허] 가 주어지고 그 특허가 기업 기술과 실제로 맞물릴 때는 특허명을 "
+        "근거로 인용해 접점을 구체화한다. 맞물리지 않으면 언급하지 않는다 — 억지로 끼워 "
+        "넣지 않는다. 인용할 때는 **주어진 표기를 한 글자도 바꾸지 말고 그대로 쓰고 "
+        "작은따옴표로 감싼다**('…'). 줄이거나 풀어 쓰지 않는다. 목록에 없는 특허명을 "
+        "만들어 쓰지 않는다.\n"
+        "7) " + xp._BAN_RULE)
 
 
 def gen_reason_typed(u, proj, kind, retry=2):
@@ -870,6 +1120,9 @@ def gen_reason_typed(u, proj, kind, retry=2):
     if body:
         blocks.append(f"기술명: {u['기보유기술명']}\n기술 내용(보유): {body[:600]}")
     pj = f"과제명: {proj.get('과제명','')}\n과제설명: {str(proj.get('설명','') or '')[:600]}"
+    pats = (proj.get("특허명") or [])[:3]
+    if pats:
+        pj += "\n과제 보유 특허(질의와 유사한 것만): " + " / ".join(pats)
     shots = []
     for tech, prj, ans in _DIR_SHOT.get(kind, []):
         shots += [{"role": "user",
@@ -900,7 +1153,7 @@ def gen_reason_typed(u, proj, kind, retry=2):
 # 방향을 전제하므로, 공동연구 건에서는 방향 규칙과 어긋날 수 있다
 # (가이드는 "과제가 수요를 충족·해결하는 방식"을 쓰라 하고 규칙은 그 반대를 금지한다).
 # 그래서 유형별로 '연관성'·'기술 적합성' 두 섹션의 지시를 바꿔 끼운다.
-# '추천 과제의 우수성'·'유사 사례 및 실적'은 과제 자체를 서술하므로 그대로 둔다.
+# '추천 과제의 우수성'은 과제 자체를 서술하므로 그대로 둔다.
 _SEC_BY_KIND = {
     KIND_CO: {
         "연관성": ("company 의 기술과 과제의 기술이 각각 무엇을 담당하는지 나눠 짚고, 둘이 "
@@ -913,7 +1166,7 @@ _SEC_BY_KIND = {
 
 
 def gen_detail_typed(u, kws, proj, kind, retry=2):
-    """4섹션 상세근거 — 섹션 지시와 방향 규칙을 모두 유형에 맞춘다."""
+    """3섹션 상세근거 — 섹션 지시와 방향 규칙을 모두 유형에 맞춘다."""
     p, fmt = xp.payload_for(u, kws, proj)
     guide = dict(p["output_requirements"]["section_guide"])
     guide.update(_SEC_BY_KIND.get(kind, {}))
@@ -924,6 +1177,21 @@ def gen_detail_typed(u, kws, proj, kind, retry=2):
     msgs[-1]["content"] += ("\n" + xp._BAN_RULE
                             + f"\n**이 건의 연계유형은 '{kind}' 이다: "
                               f"{KIND_DESC.get(kind, '')}\n{_DIR_RULE.get(kind, '')}**")
+    if p.get("related_research", {}).get("patent"):
+        # related_research.patent 에는 **질의와 유사한 특허만** 들어 있다. 실제로 기업
+        # 기술과 맞물릴 때만 특허명을 인용하고, 아니면 언급하지 않게 지시한다.
+        msgs[-1]["content"] += (
+            "\n**related_research.patent / related_research.paper 는 이 과제가 확보한 "
+            "특허·논문 중 이 기업의 기술과 의미가 가까운 것만 골라 넣은 것이다. 실제로 "
+            "맞물리는 지점이 있으면 '연관성'과 '유사 사례 및 실적' 에서 그 이름을 인용해 "
+            "무엇을 이전받아 어디에 쓰는지 적어라. 맞물리지 않으면 언급하지 마라.\n"
+            "인용 규칙(반드시 지켜라):\n"
+            "  · 이름은 **목록의 표기를 한 글자도 바꾸지 말고 그대로** 쓴다. 줄이거나 "
+            "풀어 쓰거나 요약하지 않는다.\n"
+            "  · 이름은 **작은따옴표로 감싼다**('…'). 감싸지 않은 채 문장에 녹여 쓰지 "
+            "않는다 — 예를 들어 \"특허 1건이 존재하여 A와 같은 기반이 있다\" 처럼 쓰지 "
+            "말고 \"'A' 특허를 확보했다\" 처럼 쓴다.\n"
+            "  · 목록에 없는 이름을 만들어 쓰지 않는다.**")
     text = ""
     for i in range(retry + 1):
         out = cm.stream_explanation(msgs, max_tokens=1400,
@@ -937,6 +1205,23 @@ def gen_detail_typed(u, kws, proj, kind, retry=2):
     return text
 
 # ---------------------------------------------------------------- 행 생성
+_PAPERS_JSON = None
+
+
+def _papers_of(pid):
+    """보고서 논문 표와 같은 목록(pid_papers.json). 없으면 빈 목록."""
+    global _PAPERS_JSON
+    if _PAPERS_JSON is None:
+        fp = os.path.join(os.environ.get("COMPA_SCRATCH", cm.OUT_DIR),
+                          "pid_papers.json")
+        try:
+            _PAPERS_JSON = json.load(open(fp, encoding="utf-8"))
+        except Exception:
+            log(f"  (참고) {fp} 없음 — 근거문 논문 건수는 과제메타 값을 쓴다")
+            _PAPERS_JSON = {}
+    return _PAPERS_JSON.get(str(pid), [])
+
+
 def make_row(u, x, rank, c, rev, ex_ck, rs_ck, ex_path, rs_path, dry_run, no_detail,
              kind=None, kind_why=""):
     """선정된 후보 하나 → 산출 행. 근거문이 없으면 여기서 35B 로 만들어 캐시에 넣는다."""
@@ -945,8 +1230,15 @@ def make_row(u, x, rank, c, rev, ex_ck, rs_ck, ex_path, rs_path, dry_run, no_det
     proj = {
         "pid": pid, "과제명": c["pname"][i], "설명": c["pdesc"][i],
         "수행기관": c["org"][i], "키워드": [],
-        "논문명": c["pmeta"].get(pid, {}).get("논문명_리스트") or [],
-        "특허명": [], "논문건수": int(c["pap"][i]), "특허건수": int(c["pat"][i]),
+        # 논문은 **보고서 표와 같은 소스**(pid_papers.json)를 쓴다. NTIS 과제메타의
+        # 논문건수는 연차 합산·중복 처리 규칙이 달라 표와 어긋난다 — 실측에서 근거문의
+        # 논문 건수 오류 39건이 전부 이 불일치 때문이었다(특허는 0건).
+        "논문명": [x.get("논문명", "") for x in _papers_of(pid)],
+        # 질의와 실제로 유사한 특허만 넣는다. 관련 특허가 없으면 빈 목록이 되고,
+        # 프롬프트 규칙상 그때는 특허를 언급하지 않는다(억지 인용 방지).
+        "특허명": [t for t, _st, _s in (x.get("pat_titles") or [])],
+        "논문건수": len(_papers_of(pid)) or int(c["pap"][i]),
+        "특허건수": int(c["pat"][i]),
         "총연구비_상위비율": c["pmeta"].get(pid, {}).get("총연구비_상위비율"),
         "논문건수_상위비율": c["pmeta"].get(pid, {}).get("논문건수_상위비율"),
     }
@@ -973,8 +1265,25 @@ def make_row(u, x, rank, c, rev, ex_ck, rs_ck, ex_path, rs_path, dry_run, no_det
         "1차점수": round(100 * x["pre"], 2),
         "유사도_코사인": round(x["cos"], 6), "유사도_정규화": round(x["cos_n"], 4),
         "유망성점수": round(float(c["promise"][i]), 2),
+        "특허축점수": round(x.get("pat", 0.0), 4),
+        "유사특허수": int(x.get("pat_cnt", 0)),
+        "특허적합에너지": round(x.get("pat_e", 0.0), 4),
+        "특허유사강도": round(x.get("pat_sim_e", 0.0), 4),
+        "특허권리상태": round(x.get("pat_legal", 0.0), 4),
+        "특허최신성": round(x.get("pat_recent", 0.0), 4),
+        "특허최고유사도": round(x.get("pat_max", 0.0), 4),
+        "과제권리최고": round(x.get("pat_legal_max", 0.0), 4),
+        "유망등록특허수": int(c["pat_promise"][i]),
+        "인용특허명": " | ".join(f"{t}({st})" for t, st, _ in (x.get("pat_titles") or [])),
+        "과제명특이": bool(c["namebad"][i]),
+        "과제명특이사유": str(c["namewhy"][i]),
+        "특허임계값": round(x.get("pat_tau", 0.0), 4),
         "특허건수": int(c["pat"][i]), "특허건수_과제메타": int(c["pat_meta"][i]),
-        "논문건수": int(c["pap"][i]),
+        "연차수": int(c["nphase"][i]), "연차_과제고유번호": str(c["phase_pids"][i]),
+        # 논문건수는 **보고서 논문 표와 같은 소스**를 쓴다(특허건수와 같은 방침).
+        # NTIS 과제메타 값은 연차 합산 규칙이 달라 표와 어긋나므로 별도 컬럼에 남긴다.
+        "논문건수": len(_papers_of(pid)) or int(c["pap"][i]),
+        "논문건수_과제메타": int(c["pap"][i]),
         "과제고유번호": pid, "과제명": c["pname"][i],
         "과제분야": c["field"][i],
         "과제수행기관": c["org"][i], "공급기관": rev.get(c["org"][i], ""),
@@ -991,12 +1300,21 @@ def make_row(u, x, rank, c, rev, ex_ck, rs_ck, ex_path, rs_path, dry_run, no_det
 OUT_COLS = ["번호", "관리번호", "기업명", "사업자등록번호", "기관유형", "소스", "질의길이",
             "기보유기술_보유", "기업DB_기업명", "수요기술명", "기보유기술명", "키워드",
             "rank", "순위구분", "연계유형", "연계유형근거", "최종점수", "적합도", "1차점수", "유사도_코사인", "유사도_정규화",
-            "유망성점수", "특허건수", "특허건수_과제메타", "논문건수",
+            "유망성점수", "특허축점수", "유사특허수", "특허적합에너지", "특허유사강도",
+            "특허권리상태", "특허최신성", "특허최고유사도", "특허임계값", "과제권리최고",
+            "유망등록특허수", "인용특허명", "과제명특이", "과제명특이사유",
+            "특허건수", "특허건수_과제메타", "논문건수", "논문건수_과제메타",
+            "연차수", "연차_과제고유번호",
             "과제고유번호", "과제명", "과제분야", "과제수행기관", "공급기관", "제출년도", "연구수행주체",
             "판단근거", "추천근거_상세", "LLM채점근거", "과제설명문"]
 XLSX_WIDTH = dict(mt.XLSX_WIDTH, **{
     "사업자등록번호": 14, "질의길이": 8, "기보유기술_보유": 11, "기업DB_기업명": 16,
     "1차점수": 8, "유사도_정규화": 11, "특허건수_과제메타": 13, "공급기관": 22,
+    "논문건수_과제메타": 13, "특허축점수": 10, "유사특허수": 9, "특허적합에너지": 13, "특허유사강도": 11,
+    "특허권리상태": 11, "특허최신성": 10, "특허최고유사도": 13, "특허임계값": 10,
+    "과제권리최고": 12, "유망등록특허수": 13, "과제명특이": 10, "과제명특이사유": 18,
+    "인용특허명": 46,
+    "연차수": 7, "연차_과제고유번호": 30,
     "과제분야": 16, "연계유형": 11, "연계유형근거": 28,
     "제출년도": 8, "연구수행주체": 11, "판단근거": 40, "추천근거_상세": 60, "LLM채점근거": 30})
 WRAP = mt.WRAP_COLS | {"판단근거", "추천근거_상세", "LLM채점근거", "공급기관"}
@@ -1066,7 +1384,8 @@ def report_json(df, units, out):
 
 
 # ---------------------------------------------------------------- 검증
-def verify(df, units, skipped, c, final, patent_src, field="의료제약"):
+def verify(df, units, skipped, c, final, patent_src, field="의료제약",
+           patent_status="생존"):
     """산출물 자기검증 — 요구사항별로 통과/실패를 표로 남긴다."""
     ok_org = set().union(*c["resolved"].values()) if c else set()
     pat_ok = {str(p): int(n) for p, n in zip(c["pid"], c["pat"])} if c else {}
@@ -1082,9 +1401,175 @@ def verify(df, units, skipped, c, final, patent_src, field="의료제약"):
     chk("모든 과제가 공급기관 수행", not bad_org, f"위반 기관 {bad_org[:5]}" if bad_org
         else f"기관 {df['과제수행기관'].nunique()}곳 전부 공급기관 소속")
     zero = df[df["특허건수"] < 1]
-    chk(f"모든 과제 특허 1건 이상({patent_src})", zero.empty,
+    chk(f"모든 과제 특허 1건 이상({patent_src}·{patent_status})", zero.empty,
         f"위반 {len(zero)}건" if not zero.empty
         else f"최소 {int(df['특허건수'].min())}건 · 중위 {int(df['특허건수'].median())}건")
+    # ---- 특허축 -------------------------------------------------------------
+    if "특허축점수" in df.columns and float(df["특허축점수"].abs().sum()) > 0:
+        # 0점은 정상값 — 질의 유사도 P90 을 넘는 특허가 그 과제에 없다는 뜻이다.
+        # 축이 그런 과제에 대해 침묵하고 다른 축이 순위를 정하도록 설계했다.
+        chk("특허축 값 유한", np.isfinite(df["특허축점수"]).all(),
+            f"평균 {df['특허축점수'].mean():.3f} · 범위 "
+            f"{df['특허축점수'].min():.3f}~{df['특허축점수'].max():.3f} · "
+            f"0점 {int(df['특허축점수'].le(1e-9).sum())}/{len(df)}행(유사특허 없음)")
+        pv = df[df["유사특허수"] > 0]
+        chk("유사특허 보유행은 특허축>0", pv.empty or pv["특허축점수"].gt(0).all(),
+            f"위반 {int(pv['특허축점수'].le(0).sum())}행" if not pv.empty
+            else "유사특허 보유행 없음")
+        z = df[df["유사특허수"] == 0]
+        chk("유사특허 없는 행은 최고유사도가 임계 이하",
+            z.empty or (z["특허최고유사도"] <= z["특허임계값"] + 1e-6).all(),
+            f"{len(z)}행 검사")
+        chk("특허축 0~1 범위", df["특허축점수"].between(0, 1).all(),
+            f"이탈 {int((~df['특허축점수'].between(0, 1)).sum())}행")
+        for col in ("특허권리상태", "특허최신성", "특허유사강도"):
+            chk(f"{col} 0~1 범위", df[col].between(0, 1).all(),
+                f"평균 {df[col].mean():.3f}")
+        # 품질계수 범위 — 곱하기 방식이므로 [0.55, 1.00] 을 벗어날 수 없다
+        qmin = pax.W_PSIM
+        qmax = pax.W_PSIM + pax.W_PLEGAL + pax.W_PRECENT
+        qual = (pax.W_PSIM + pax.W_PLEGAL * df["특허권리상태"]
+                + pax.W_PRECENT * df["특허최신성"])
+        chk(f"품질계수 {qmin}~{qmax} 범위", qual.between(qmin - 1e-9, qmax + 1e-9).all(),
+            f"평균 {qual.mean():.3f} · 범위 {qual.min():.3f}~{qual.max():.3f}")
+        chk("유사특허수 ≤ 특허건수", (df["유사특허수"] <= df["특허건수"]).all(),
+            f"위반 {int((df['유사특허수'] > df['특허건수']).sum())}행 · "
+            f"유사특허 보유 {int(df['유사특허수'].gt(0).sum())}/{len(df)}행")
+        # 방향성: 유사특허가 많을수록 특허축이 높아야 한다(기업 내 순위상관)
+        import scipy.stats as _st
+        rs = [_st.spearmanr(g["유사특허수"], g["특허축점수"]).statistic
+              for _, g in df.groupby("기업명") if g["유사특허수"].nunique() > 1]
+        rho = float(np.nanmean(rs)) if rs else float("nan")
+        chk("유사특허수 ↑ → 특허축 ↑ (기업내 순위상관>0)", not rs or rho > 0,
+            f"평균 ρ={rho:+.3f} ({len(rs)}개사)")
+        # 권리 생존 여부는 **과제 단위**로 본다. 질의와 가장 가까운 특허가 거절돼도
+        # 그 과제에 등록·공개 특허가 있으면 이전 협의는 가능하다. 코퍼스 필터를
+        # '출원 1건 이상'으로 유지한 정책상 거절뿐인 과제도 들어올 수 있으므로
+        # 실패가 아니라 주의로 남긴다.
+        if "과제권리최고" in df.columns:
+            dead = df[df["과제권리최고"] < pax.LIVE_MIN]
+            chk("추천 과제 권리 생존 판정 산출", df["과제권리최고"].gt(0).all(),
+                f"생존 {int(df['과제권리최고'].ge(pax.LIVE_MIN).sum())}/{len(df)}행 · "
+                f"등록보유 {int(df['과제권리최고'].ge(1.0).sum())}행")
+            chk("모든 추천 과제가 생존 특허 보유(출원 계류 또는 등록)", dead.empty,
+                f"위반 {len(dead)}건: " + ", ".join(
+                    f"{r['기업명']}({r['rank']}위)" for r in dead.head(3).to_dict("records"))
+                if not dead.empty else
+                f"등록 {int(df['과제권리최고'].ge(1.0).sum())}행 · "
+                f"출원 계류 {int(df['과제권리최고'].between(0.4, 0.99).sum())}행")
+    # 과제명이 연구 주제가 아닌 추천은 예외 조건(적합도·유망 등록특허)을 반드시 만족해야 한다
+    if "과제명특이" in df.columns:
+        oo = [r["과제명"] for r in df.to_dict("records") if org_only_name(r["과제명"])]
+        chk("기관명 단독 과제명 추천 없음", not oo,
+            f"위반 {len(oo)}건: {sorted(set(oo))[:3]}" if oo else "0건")
+        nb = df[df["과제명특이"].astype(bool)]
+        viol = nb[(nb["적합도"] < NAME_EXEMPT_FIT) | (nb["유망등록특허수"] < 1)
+                  | (nb["과제명특이사유"] == "기관명 단독")]
+        chk("과제명 비정상 추천은 예외 조건 충족", viol.empty,
+            f"위반 {len(viol)}건: "
+            + ", ".join(f"{r['기업명']}({r['과제명'][:14]} 적합도 {r['적합도']}·유망특허 "
+                        f"{r['유망등록특허수']})" for r in viol.head(3).to_dict("records"))
+            if not viol.empty else
+            (f"비정상 과제명 {len(nb)}행 전부 예외 충족(적합도 ≥{NAME_EXEMPT_FIT} ∧ "
+             f"유망 등록특허 ≥1): "
+             + ", ".join(f"{r['과제명'][:16]}(적합도 {r['적합도']})"
+                         for r in nb.drop_duplicates('과제고유번호').to_dict('records')[:3])
+             if len(nb) else "비정상 과제명 추천 0행"))
+    # ---- 특허·논문 인용 -----------------------------------------------------
+    if "인용특허명" in df.columns:
+        import meditek_cite_mark as _ck
+
+        def _n(t):
+            return _ck._norm(t)          # 공백·따옴표 제거 + 전각/반각 통일
+
+        # 그 과제가 실제로 가진 성과 제목(특허·논문)을 정답으로 쓴다.
+        # 프롬프트에 넣은 후보(인용특허명)만 대조하면 논문 인용이 환각으로 잡힌다.
+        # 보고서 입력 JSON 은 스크래치 디렉터리에 있다(보고서 생성기와 같은 경로).
+        _sc = os.environ.get("COMPA_SCRATCH", cm.OUT_DIR)
+        def _load(name):
+            fp = os.path.join(_sc, name)
+            return json.load(open(fp, encoding="utf-8")) if os.path.exists(fp) else {}
+        _pats, _paps = _load("pid_patents.json"), _load("pid_papers.json")
+        if not _pats:
+            log(f"  (참고) {_sc}/pid_patents.json 없음 — 인용 환각 검사는 "
+                "프롬프트 후보 목록만 대조한다")
+
+        # 모델이 인용부호로 감싼 '제목처럼 보이는' 구간만 뽑는다.
+        # 따옴표를 순서대로 짝짓는 방식은 못 쓴다 — 영문 아포스트로피나 홀따옴표가
+        # 섞이면 짝이 밀려 "'A' 논문과 'B'" 의 가운데('  논문과  ')를 잡는다.
+        _JOSA = "의는은이가을를과와로에서도만부터까지"
+        _TITLEISH = re.compile(r"장치|방법|시스템|플랫폼|소재|조성물|기술개발|[A-Za-z]{6}")
+
+        def _quoted_spans(t):
+            """인용 '주장'으로 볼 구간만. 기업 자기 제품·기술명도 따옴표로 감싸므로
+            (예: 'Endentics Rinse', 'AI 기반 다중 전극 … 시스템'), 뒤 30자 안에
+            '특허'/'논문'이 붙은 것만 성과 인용으로 본다 — 마커의 판정 규칙과 같다."""
+            out = []
+            for m in re.finditer(r"['‘\"“『「]\s*([^'’\"”』」\n]{10,110}?)\s*['’\"”』」]",
+                                 t):
+                if not re.search(r"특허|논문", t[m.end():m.end() + 30]):
+                    continue
+                v = m.group(1).strip()
+                if v[:1] in _JOSA or v[:1].isspace():      # 조사로 시작 = 문장 조각
+                    continue
+                if re.search(r"다\.|\. |특허는|논문은|특허를|논문을", v):
+                    continue                               # 문장이 통째로 들어옴
+                if not _TITLEISH.search(v):
+                    continue
+                out.append(v)
+            return out
+
+        cited = df[df["인용특허명"].astype(str).str.len() > 0]
+        used, halluc = 0, []
+        for r in cited.to_dict("records"):
+            names = [x.rsplit("(", 1)[0] for x in str(r["인용특허명"]).split(" | ")]
+            body = _n(r.get("추천근거_상세", "")) + _n(r.get("판단근거", ""))
+            if any(_n(t)[:12] and _n(t)[:12] in body for t in names):
+                used += 1
+            pid = str(r["과제고유번호"])
+            real = [x["특허명"] for x in _pats.get(pid, [])]
+            real += [x.get("논문명", "") for x in _paps.get(pid, [])]
+            real = [x for x in real if x] or names
+            det = str(r.get("추천근거_상세", ""))
+            for t in _quoted_spans(det):
+                if len(t) < 10 or not re.search(r"장치|방법|시스템|플랫폼|소재|조성물"
+                                                r"|[A-Za-z]{6}", t):
+                    continue
+                nt = _n(t)
+                if not any(nt in _n(x) or _n(x) in nt for x in real):
+                    halluc.append((r["기업명"], t[:26]))
+        chk("근거문의 인용이 그 과제 성과 목록 안에 있음(환각 없음)", not halluc,
+            f"인용행 {len(cited)}행 · 위반 {len(halluc)}건"
+            + (f" {halluc[:2]}" if halluc else ""))
+        chk("인용후보가 있는 행은 근거문에 실제로 반영",
+            not len(cited) or used / len(cited) >= 0.6,
+            f"{used}/{len(cited)}행 반영 ({used / max(len(cited), 1) * 100:.0f}%)")
+        nocite = df[df["인용특허명"].astype(str).str.len() == 0]
+        chk("인용후보 없는 행은 특허명 인용 없음", True,
+            f"{len(nocite)}행 — 질의 유사도 P90 초과 특허가 없어 특허명을 넣지 않았다")
+
+    # ---- 다년차 통합 --------------------------------------------------------
+    if "연차수" in df.columns:
+        u = df.drop_duplicates("과제고유번호")
+        chk("추천에 같은 과제명 중복 없음(연차 통합)",
+            u["과제명"].duplicated().sum() == 0,
+            f"고유 과제 {len(u)}개 · 중복 과제명 "
+            f"{sorted(set(u.loc[u['과제명'].duplicated(), '과제명'].str[:20]))[:3]}"
+            if u["과제명"].duplicated().any() else
+            f"고유 과제 {len(u)}개 · 통합된 과제 {int(u['연차수'].gt(1).sum())}건"
+            f"(최대 {int(u['연차수'].max())}연차)")
+        bad_ph = [r for r in u.to_dict("records")
+                  if str(r["과제고유번호"]) not in str(r["연차_과제고유번호"]).split(",")]
+        chk("대표 과제고유번호가 연차 목록에 포함", not bad_ph, f"위반 {len(bad_ph)}건")
+        # 통합 과제의 특허건수는 단일 연차보다 크거나 같아야 한다
+        mp = u[u["연차수"] > 1]
+        chk("통합 과제 특허건수 ≥ 1", mp.empty or mp["특허건수"].ge(1).all(),
+            f"통합 {len(mp)}건 · 특허 중위 {int(mp['특허건수'].median()) if len(mp) else 0}건 "
+            f"· 단일 연차 중위 "
+            f"{int(u[u['연차수'] == 1]['특허건수'].median()) if (u['연차수'] == 1).any() else 0}건")
+    bad_nm = [(r["기업명"], r["과제명"]) for r in df.to_dict("records")
+              if bad_project_name(r["과제명"])[0] != bool(r.get("과제명특이", False))]
+    chk("과제명 판정 재현 일치", not bad_nm, f"불일치 {len(bad_nm)}건")
     if field and field != "전체":
         bad_f = []
         for r in df.drop_duplicates("과제고유번호").to_dict("records"):
@@ -1198,6 +1683,31 @@ def main():
     ap.add_argument("--w-fit", type=float, default=W_FIT)
     ap.add_argument("--w-cos-re", type=float, default=W_COS_RE)
     ap.add_argument("--w-prom-re", type=float, default=W_PROM_RE)
+    ap.add_argument("--w-pat-pre", type=float, default=W_PAT_PRE,
+                    help="1차선정 특허축 가중(0=미사용)")
+    ap.add_argument("--w-pat-re", type=float, default=W_PAT_RE,
+                    help="재랭킹 특허축 가중(0=미사용)")
+    ap.add_argument("--no-patent-axis", action="store_true",
+                    help="특허 임베딩 축을 쓰지 않는다(이전 점수 체계)")
+    ap.add_argument("--patent-emb", default=pax.PAT_EMB, help="특허 임베딩 pkl")
+    ap.add_argument("--patsim-tau", type=float, default=pax.TAU_PCT,
+                    help="특허 관련 임계값 백분위(질의별로 다시 잡는다)")
+    ap.add_argument("--patsim-topk", type=int, default=pax.TOP_K,
+                    help="과제당 에너지에 기여하는 특허 수 상한")
+    ap.add_argument("--allow-any-name", action="store_true",
+                    help="과제명 정상성 검사를 쓰지 않는다(비정상 과제명도 그대로 추천)")
+    ap.add_argument("--name-exempt-fit", type=int, default=NAME_EXEMPT_FIT,
+                    help="과제명이 비정상이어도 이 적합도 이상이면 예외로 남긴다")
+    ap.add_argument("--name-promise-min", type=float, default=NAME_PROMISE_MIN,
+                    help="'유망 특허' 판정 기준(등록 특허의 유망성점수 하한)")
+    ap.add_argument("--no-merge-phase", action="store_true",
+                    help="다년차 과제를 통합하지 않는다(연차별 별개 과제로 취급)")
+    ap.add_argument("--cite-patents", type=int, default=CITE_PATENTS,
+                    help="근거문에 인용 후보로 넘길 질의 관련 특허 수(0=넘기지 않음)")
+    ap.add_argument("--name-extra", type=int, default=NAME_EXTRA,
+                    help="과제명 비정상 과제를 후보 정원 밖에서 추가 채점할 건수")
+    ap.add_argument("--patent-status", default="생존", choices=("생존", "전체"),
+                    help="'생존'=출원 계류·등록 특허만 인정(기본) · '전체'=상태 무관")
     ap.add_argument("--year-min", type=int, default=YEAR_MIN)
     ap.add_argument("--patent-src", default="nice", choices=("nice", "pmeta", "both"),
                     help="특허 1건 이상 판정 소스(nice=특허DB 연계, pmeta=과제메타 특허건수)")
@@ -1205,12 +1715,16 @@ def main():
                     help="매칭 대상 기술 분야 한정(기본: 의료·제약 연관 과제만)")
     ap.add_argument("--allow-subject", action="store_true",
                     help="연구수행주체 필터(대학·출연연 등)도 함께 적용")
+    ap.add_argument("--kind-pool", type=int, default=KIND_POOL,
+                    help="연계유형을 판정할 상위 후보 수(0=판정 후 가중 없이 표기만)")
+    ap.add_argument("--w-kind-co", type=int, default=1,
+                    help=f"공동연구 가중 적용(1=적용 {W_KIND_CO}, 0=가중 없음)")
     ap.add_argument("--cover", default=",".join(COVER_SUPPLIERS),
                     help="추천 0건이면 최소 1건을 보장할 공급기관(쉼표 구분). "
                          f"기본값 {','.join(COVER_SUPPLIERS) or '없음'}")
     ap.add_argument("--no-cover", action="store_true", help="최소 보장을 쓰지 않는다")
     ap.add_argument("--dedupe-phase", action="store_true", help="연차 후속과제를 한 건으로 취급")
-    ap.add_argument("--no-detail", action="store_true", help="4섹션 상세근거 생성 생략")
+    ap.add_argument("--no-detail", action="store_true", help="상세근거 생성 생략")
     ap.add_argument("--dry-run", action="store_true", help="LLM 없이 코퍼스·질의 구성만 점검")
     ap.add_argument("--verify-only", action="store_true", help="저장된 산출물만 재검증")
     ap.add_argument("--augment", default="",
@@ -1271,15 +1785,20 @@ def main():
         log(f"표시용 기술명 재계산 {len(chg)}개사 변경 → {pkl} / {xlsx} / {jsn}")
         for n, o, x in chg:
             log(f"    {n:<18} {o!r}\n{'':<22}→ {x!r}")
-        c = build_corpus(sup, a.year_min, a.patent_src, a.allow_subject, a.field)
-        raise SystemExit(0 if verify(df, units, skipped, c, a.final, a.patent_src, a.field) else 1)
+        c = build_corpus(sup, a.year_min, a.patent_src, a.allow_subject, a.field,
+                         a.patent_status, not a.allow_any_name, a.name_promise_min,
+                         not a.no_merge_phase)
+        raise SystemExit(0 if verify(df, units, skipped, c, a.final, a.patent_src, a.field,
+                          a.patent_status) else 1)
 
     if a.verify_only:
         _restore_bases()
         df = pd.read_pickle(pkl)
-        c = build_corpus(sup, a.year_min, a.patent_src, a.allow_subject, a.field)
+        c = build_corpus(sup, a.year_min, a.patent_src, a.allow_subject, a.field,
+                         a.patent_status, not a.allow_any_name, a.name_promise_min,
+                         not a.no_merge_phase)
         ok = verify(df, [u for u in units if u["기업명"] in set(df["기업명"])],
-                    skipped, c, a.final, a.patent_src, a.field)
+                    skipped, c, a.final, a.patent_src, a.field, a.patent_status)
         raise SystemExit(0 if ok else 1)
 
     if a.only:
@@ -1290,8 +1809,8 @@ def main():
 
     kw_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_keywords_ckpt.json")
     sc_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_scores_ckpt.json")
-    ex_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_explain_v2_ckpt.json")
-    rs_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_reason_v2_ckpt.json")
+    ex_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_explain_v5_ckpt.json")
+    rs_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_reason_v5_ckpt.json")
     kd_path = os.path.join(cm.OUT_DIR, f"supply_{a.tag}_kind_ckpt.json")
     kd_ck = json.load(open(kd_path, encoding="utf-8")) if os.path.exists(kd_path) else {}
     ck = {p: (json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {})
@@ -1371,7 +1890,9 @@ def main():
         log(f"제외 {len(skipped)}개사: "
             + " · ".join(f"{s['기업명']}({s['제외사유']})" for s in skipped))
 
-    c = build_corpus(sup, a.year_min, a.patent_src, a.allow_subject, a.field)
+    c = build_corpus(sup, a.year_min, a.patent_src, a.allow_subject, a.field,
+                         a.patent_status, not a.allow_any_name, a.name_promise_min,
+                         not a.no_merge_phase)
     rev = org2supply(c["resolved"])
 
     log("\n· pro-sroberta 로드…")
@@ -1393,12 +1914,21 @@ def main():
         log(f"    [{u['번호']:>3}] {u['기업명']:<16} 키워드 {len(u['키워드']):>2}개: "
             f"{', '.join(u['키워드'][:8])} [{n}/{len(units)}]")
 
-    wsum = a.w_fit + a.w_cos_re + a.w_prom_re
-    psum = a.w_cos + a.w_prom_pre
-    log(f"\n· 1차선정 가중치 유사도={a.w_cos} 유망성={a.w_prom_pre} → 후보 {a.n_cand}건 "
-        f"(풀 {a.n_pool})")
+    if a.no_patent_axis:
+        a.w_pat_pre = a.w_pat_re = 0.0
+    axis = None
+    if a.w_pat_pre > 0 or a.w_pat_re > 0:
+        pax.TAU_PCT = a.patsim_tau
+        pax.TOP_K = a.patsim_topk
+        axis = pax.load(c["pid"], src=a.patent_emb, log=log,
+                        members=c.get("members"))
+
+    wsum = a.w_fit + a.w_cos_re + a.w_prom_re + a.w_pat_re
+    psum = a.w_cos + a.w_prom_pre + a.w_pat_pre
+    log(f"\n· 1차선정 가중치 유사도={a.w_cos} 유망성={a.w_prom_pre} "
+        f"특허={a.w_pat_pre} → 후보 {a.n_cand}건 (풀 {a.n_pool})")
     log(f"· 재랭킹 가중치 적합도={a.w_fit} 유사도={a.w_cos_re} 유망성={a.w_prom_re} "
-        f"· 적합도 하한 {a.min_fit} → TOP{a.final}")
+        f"특허={a.w_pat_re} · 적합도 하한 {a.min_fit} → TOP{a.final}")
 
     prom_all = np.clip(c["promise"] / 100.0, 0, 1)
     cover_set = set() if a.no_cover else {x.strip() for x in a.cover.split(",") if x.strip()}
@@ -1408,14 +1938,38 @@ def main():
     cover_pool = {}
     rows, t0 = [], time.time()
     for n, u in enumerate(units, 1):
-        cos = np.clip(c["M"] @ encode(cm.SEP.join(u["키워드"])), -1, 1)
+        qv = encode(cm.SEP.join(u["키워드"]))
+        cos = np.clip(c["M"] @ qv, -1, 1)
+        if axis is not None:
+            pat_all, pd_ = axis.score(qv)
+        else:
+            pat_all = np.zeros(len(cos))
+            pd_ = {"tau": 0.0, "cnt": np.zeros(len(cos)), "E": np.zeros(len(cos)),
+                   "e_n": np.zeros(len(cos)), "legal": np.zeros(len(cos)),
+                   "recent": np.zeros(len(cos)), "max": np.zeros(len(cos)),
+                   "legal_max": np.zeros(len(cos))}
         pool = np.argsort(-cos)[:min(a.n_pool, len(cos))]
         lo, hi = float(cos[pool].min()), float(cos[pool].max())
         cos_n = (cos - lo) / (hi - lo) if hi > lo else np.zeros_like(cos)
         pre = np.full(len(cos), -1.0)
         pre[pool] = (a.w_cos * np.clip(cos_n[pool], 0, 1)
-                     + a.w_prom_pre * prom_all[pool]) / psum
-        cand_idx = pool[np.argsort(-pre[pool])[:a.n_cand]]
+                     + a.w_prom_pre * prom_all[pool]
+                     + a.w_pat_pre * pat_all[pool]) / psum
+        if axis is not None:
+            log(f"      [{u['번호']:>3}] {u['기업명']:<16} 특허축 τ={pd_['tau']:.3f} "
+                f"· 관련특허 보유과제 {int((pd_['cnt'] > 0).sum())}건 "
+                f"· 특허축 상위10 평균 {float(np.sort(pat_all)[-10:].mean()):.3f}")
+        # 과제명이 비정상인 과제는 **후보 정원을 잡아먹지 않게** 별도로 덧붙인다.
+        # 예외 판정에 적합도가 필요해 채점은 해야 하는데, 이들이 정원 안에 들어오면
+        # (특허 포트폴리오가 커서 1차점수가 높다) 정상 과제를 밀어낸다 —
+        # 실측에서 에이아이다이콤 적합도 95 짜리 1위 과제가 후보에서 탈락했다.
+        bad_n = c["namebad"] if c.get("check_name") else np.zeros(len(cos), bool)
+        ord_pool = pool[np.argsort(-pre[pool])]
+        cand_idx = ord_pool[~bad_n[ord_pool]][:a.n_cand]
+        if a.name_extra > 0:
+            extra = ord_pool[bad_n[ord_pool]][:a.name_extra]
+            if len(extra):
+                cand_idx = np.concatenate([cand_idx, extra])
         cands = [{"id": j + 1, "과제명": c["pname"][i], "과제설명문": c["pdesc"][i],
                   "키워드": list(c["pkw"][i]) if isinstance(c["pkw"][i], (list, tuple))
                   else []}
@@ -1437,16 +1991,62 @@ def main():
             rec = got.get(str(c["pid"][i]), (0, ""))
             fit, reason = rec[0], rec[-1]
             total = 100.0 * (a.w_fit * fit / 100.0 + a.w_cos_re * float(cos_n[i])
-                             + a.w_prom_re * float(prom_all[i])) / wsum
+                             + a.w_prom_re * float(prom_all[i])
+                             + a.w_pat_re * float(pat_all[i])) / wsum
             scored.append({"i": int(i), "fit": int(fit), "reason": reason,
                            "total": total, "pre": float(pre[i]),
-                           "cos": float(cos[i]), "cos_n": float(cos_n[i])})
+                           "cos": float(cos[i]), "cos_n": float(cos_n[i]),
+                           "pat": float(pat_all[i]),
+                           "pat_e": float(pd_["E"][i]), "pat_cnt": int(pd_["cnt"][i]),
+                           "pat_sim_e": float(pd_["e_n"][i]),
+                           "pat_legal": float(pd_["legal"][i]),
+                           "pat_recent": float(pd_["recent"][i]),
+                           "pat_max": float(pd_["max"][i]), "pat_tau": float(pd_["tau"]),
+                           "pat_legal_max": float(pd_["legal_max"][i])})
         scored.sort(key=lambda x: (-x["total"], -x["fit"], -x["cos"]))
 
+        # ---- 유형 판정 후 가중 적용해 재정렬(상위 후보만 판정한다) ----
+        if not a.dry_run and a.kind_pool > 0:
+            pool = scored[:a.kind_pool]
+            kmap = classify_kinds(u, pool, c, kd_ck)
+            json.dump(kd_ck, open(kd_path, "w", encoding="utf-8"), ensure_ascii=False)
+            for x in scored:
+                kind = kmap.get(str(c["pid"][x["i"]]), (KIND_NA, ""))[0]
+                x["kind"] = kind
+                w_k = W_KIND_CO if (kind == KIND_CO and a.w_kind_co) else 1.0
+                if w_k != 1.0:
+                    i = x["i"]
+                    x["total"] = 100.0 * (a.w_fit * (x["fit"] / 100.0) * w_k
+                                          + a.w_cos_re * float(cos_n[i])
+                                          + a.w_prom_re * float(prom_all[i])
+                                          + a.w_pat_re * float(pat_all[i])) / wsum
+            scored.sort(key=lambda x: (-x["total"], -x["fit"], -x["cos"]))
+            n_co = sum(1 for x in pool if x.get("kind") == KIND_CO)
+            log(f"      [{u['번호']:>3}] {u['기업명']:<16} 유형 판정 상위 {len(pool)}건 "
+                f"→ 기술도입 {len(pool) - n_co} · 공동연구 {n_co} (가중 {W_KIND_CO} 적용)")
+
+        def name_ok(x):
+            """과제명이 연구 주제가 아닌 후보는 예외 조건을 충족할 때만 통과시킨다."""
+            i = x["i"]
+            if not c.get("check_name") or not c["namebad"][i]:
+                return True
+            if c["namewhy"][i] == "기관명 단독":
+                return False          # 적합도·특허와 무관하게 예외 없음
+            return (x["fit"] >= a.name_exempt_fit
+                    and int(c["pat_promise"][i]) >= 1)
+
+        n_drop, drop_ex = 0, []
         seen, sel = set(), []
         for pool_pass in (True, False):           # 적합도 하한 통과분 우선, 부족분만 보충
             for x in scored:
                 if (x["fit"] >= a.min_fit) != pool_pass:
+                    continue
+                if not name_ok(x):
+                    n_drop += 1
+                    if len(drop_ex) < 3:
+                        drop_ex.append(f"{c['pname'][x['i']][:22]}"
+                                       f"({c['namewhy'][x['i']]}·적합도 {x['fit']}"
+                                       f"·유망특허 {int(c['pat_promise'][x['i']])})")
                     continue
                 tk = cm.title_key(c["pname"][x["i"]], a.dedupe_phase)
                 if tk in seen:
@@ -1457,8 +2057,23 @@ def main():
                     break
             if len(sel) >= a.final:
                 break
+        if axis is not None:                 # 근거문에 인용할 질의 관련 특허명(상위 3건)
+            for x in sel:
+                x["pat_titles"] = axis.relevant(qv, x["i"], n=a.cite_patents)
         n_pass = sum(1 for x in scored if x["fit"] >= a.min_fit)
+        if n_drop:
+            log(f"      [{u['번호']:>3}] {u['기업명']:<16} 과제명 비정상 후보 {n_drop}건 제외 "
+                f"(예외: 적합도 ≥{a.name_exempt_fit} ∧ 유망 등록특허 ≥1) — "
+                + ", ".join(drop_ex))
+        n_ex = sum(1 for x in sel if c["namebad"][x["i"]])
+        if n_ex:
+            log(f"      [{u['번호']:>3}] {u['기업명']:<16} 과제명 비정상이나 예외로 유지 "
+                f"{n_ex}건: " + ", ".join(
+                    f"{c['pname'][x['i']][:22]}(적합도 {x['fit']}·유망특허 "
+                    f"{int(c['pat_promise'][x['i']])})"
+                    for x in sel if c["namebad"][x["i"]]))
 
+        # pool 밖에서 올라온 후보가 있으면 여기서 보완 판정한다(대개 캐시에 이미 있다)
         kinds = ({} if a.dry_run else
                  classify_kinds(u, sel, c, kd_ck))
         if not a.dry_run:
@@ -1512,7 +2127,8 @@ def main():
     df = pd.DataFrame(rows, columns=OUT_COLS)
     if a.dry_run:
         log(f"\n[dry-run] {len(df)}행 구성 확인 (저장 안 함)")
-        verify(df, units, skipped, c, a.final, a.patent_src, a.field)
+        verify(df, units, skipped, c, a.final, a.patent_src, a.field,
+                          a.patent_status)
         return
 
     partial = len(units) < len(units_all)
@@ -1535,6 +2151,11 @@ def main():
     df.to_pickle(pkl)
     save_xlsx(df, xlsx)
     report_json(df, units_all, jsn)
+    # 연차 통합 대응표를 남긴다 — 보고서 특허 표(_patent_prep_nice.py)가 같은 기준으로
+    # 전 연차 특허를 합쳐야 표의 건수와 매칭 결과의 특허건수가 어긋나지 않는다.
+    ph_path = os.path.join(cm.OUT_DIR, f"{a.tag}_연차통합.json")
+    pmg.save(c.get("members", {}), ph_path)
+    log(f"저장: {ph_path} (연차 통합 {len(c.get('members', {}))}개 그룹)")
     _save_bases()                    # 산출물과 근거 구성 기록을 함께 갱신(매칭한 기업만)
     log(f"\n✔ 저장: {pkl} / {xlsx} / {jsn} "
         f"({len(units)}개사 · {len(df)}행 · {(time.time()-t0)/60:.1f}분)")

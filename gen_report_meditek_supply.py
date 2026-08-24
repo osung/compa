@@ -41,11 +41,13 @@ from docx.shared import Inches, Pt, Twips
 
 import gen_report as gr
 import gen_report_meditek_top10 as gm
+import meditek_cite_mark as _cite
 import meditek_theme as mt
 import report_text_fix as tf
 
 mt.apply_docx(gr)                      # 표·제목 색을 MEDITEK CI 로 교체(로드 직후 1회)
 from gen_report import (SERIF, add_disclaimer_box, cell_vcenter, fill_cell, keep_next,
+                        set_cell_width,
                         para, para_border, run_shade, section_label, set_margins,
                         set_pgnum_start, setup_cover_header, setup_running_header,
                         setup_styles, shade_cell, style_run, table_cellmar,
@@ -65,22 +67,33 @@ PUBLISH_DATE = os.environ.get("MEDITEK_PUBLISH_DATE", "2026. 8. 22.")
 COVER_EYEBROW = "의료기기 / 헬스케어  OPEN INNOVATION  &  BIZ PARTNERING"
 COVER_TITLE1 = "2026 MEDITEK"
 COVER_TITLE2 = "국가R&D 과제 매칭 보고서"
-COVER_EVENT = f"{mt.EVENT['일시']}      {mt.EVENT['장소']}"
+# 표지에는 일시·장소를 싣지 않는다(요청). 행사 개요 표에만 둔다.
 # 생성 주체 표기 — 발행일 아래 줄에 따로, 강조해서 싣는다
 ENGINE_NOTE = "APOLLO 국가R&D 사업화 유망성 탐색 플랫폼 AI 매칭 결과"
+# 표지 우측 하단 버전 표기 — 발행일 박스를 없애고 여기로 옮겼다(인쇄본 판 구분용).
+# MEDITEK_REPORT_VERSION 을 주면 발행일 뒤에 판 번호가 붙는다(예: "2026. 8. 22. · v2").
+_VER = os.environ.get("MEDITEK_REPORT_VERSION", "").strip()
+COVER_VERSION = f"{PUBLISH_DATE} · {_VER}" if _VER else PUBLISH_DATE
 
 # 코퍼스 조건은 '제출년도 2020 이후'로 걸지만, 제출년도는 보고서를 낸 연도라 그 해에도
 # 과제가 살아 있었다는 뜻이다. 실제 매칭 결과 114개 과제의 종료연도는 2020~2030 이고
 # 2020년 이전에 종료된 과제는 0건이므로(시작연도는 2013년까지 올라간다), 독자에게는
 # '2020년 이후 수행 중이거나 종료된 과제'로 적는 것이 사실에 맞다.
+# 특허 조건은 '등록 또는 출원 계류(공개) 특허 1건 이상'이다. 거절·취하·포기된 특허는
+# 권리가 성립하지 않았고 소멸된 특허는 권리가 끝났으므로 코퍼스에서 배제한다
+# (match_meditek_supply.ALIVE_STATES). "특허 1건 이상"으로만 적으면 거절된 특허만 가진
+# 과제도 포함되는 것처럼 읽히므로 상태를 명시한다.
 CORPUS_NOTE = ("매칭 대상 과제는 2026 MEDITEK 공급기관이 수행한 국가 R&D 과제 중 "
-               "2020년 이후 수행 중이거나 종료된 과제로 한정하고, 그 가운데 특허 성과가 "
-               "1건 이상 확보된 과제만을 후보로 삼았다. 기술이전 협의가 가능한 권리가 "
+               "2020년 이후 수행 중이거나 종료된 과제로 한정하고, 그 가운데 등록되었거나 "
+               "출원 계류 중인 특허를 1건 이상 확보한 과제만을 후보로 삼았다. 거절·취하·"
+               "소멸된 특허만 있는 과제는 제외하였다. 기술이전 협의가 가능한 권리가 "
                "실제로 존재하는 과제만 추천하기 위한 조건이다.")
 METHOD_NOTE = ("매칭은 기업이 제출한 기술 정보에서 핵심 기술 키워드를 추출하고, 그 키워드와 "
-               "과제 임베딩의 의미 유사도 및 과제의 기술적 유망성을 함께 반영해 후보를 "
-               "선별한 뒤, 각 후보가 해당 기업의 기술과 실질적으로 부합·기여하는 정도를 "
-               "평가해 순위를 다시 정하는 방식으로 수행하였다.")
+               "과제 임베딩의 의미 유사도, 과제가 확보한 특허와의 의미 유사도, 과제의 "
+               "기술적 유망성을 함께 반영해 후보를 선별한 뒤, 각 후보가 해당 기업의 기술과 "
+               "실질적으로 부합·기여하는 정도를 평가해 순위를 다시 정하는 방식으로 "
+               "수행하였다. 기업의 기술과 유사한 특허를 여러 건 확보한 과제, 권리가 살아 "
+               "있는 특허를 확보한 과제를 우선한다.")
 
 TOPN_LABEL = "Top 5"
 TOP_KEY = "top5"
@@ -151,6 +164,8 @@ def tech_name_rows(dm):
 # 연계유형 표기 — 표에는 짧게, 개요에 정의를 둔다.
 # 유형은 기술도입·공동연구 둘뿐이다. 기업이 과제에 부품·서비스를 제공하는 방향은
 # 이 보고서가 다루는 기술이전이 아니라서 유형으로 두지 않는다.
+# 연계유형(기술도입/공동연구)은 **보고서에 노출하지 않는다**(요청). 매칭 내부에서
+# 재랭킹 가중과 근거문 방향 규칙에만 쓰고, 산출 pkl/xlsx 에는 남긴다.
 KIND_SHORT = {"기술도입": "기술도입", "공동연구": "공동연구", "미분류": "-"}
 KIND_COLOR = {"기술도입": mt.APOLLO_BLUE, "공동연구": mt.APOLLO_BLUE_LT,
               "미분류": mt.APOLLO_GREY}
@@ -257,39 +272,89 @@ def preflight(demands, pidf):
 
 
 # ---- 표지 -------------------------------------------------------------------
+# PDF 판(gen_report_pdf_meditek_supply.cover)과 같은 구성을 python-docx 로 만든다.
+# 캔버스가 없으므로 색 밴드·표제 패널은 음영을 준 표로 대신한다.
+COVER_APOLLO_IN = 3.0          # 표지 하단 APOLLO 로고 폭(inch) ≈ 76mm, PDF 와 같은 크기
+BAND_H_PT = 7                  # 색 밴드 높이
+
+
+def _text_width_tw(doc):
+    """구역의 실제 본문 폭(twips) — 페이지 크기를 하드코딩하지 않는다."""
+    sec = doc.sections[0]
+    return int((sec.page_width - sec.left_margin - sec.right_margin) / 635)
+
+
+def _band(doc, cols, h=BAND_H_PT, after=0):
+    """색 밴드 한 줄 — 셀마다 음영을 준 무테 표."""
+    t = doc.add_table(rows=1, cols=len(cols))
+    t.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    tw = _text_width_tw(doc)
+    w = tw // len(cols)
+    table_fixed(t, [w] * len(cols))
+    for i, c in enumerate(cols):
+        cell = t.rows[0].cells[i]
+        shade_cell(cell, c)
+        pf = cell.paragraphs[0].paragraph_format
+        pf.space_before = Pt(0); pf.space_after = Pt(0)
+        style_run(cell.paragraphs[0].add_run(" "), 1)
+    t.rows[0].height = Pt(h)
+    para(doc, "", after=after)
+    return t
+
+
 def build_cover(doc):                      # 건수 요약은 표지에서 빼고 개요에만 둔다
-    para(doc, "", after=30)
+    sec = doc.sections[0]                  # 표지는 헤더가 없어 위아래 여백을 좁게 쓴다
+    sec.top_margin = Inches(0.55)
+    sec.bottom_margin = Inches(0.45)
+    para(doc, "", after=10)
     lp = doc.add_paragraph()                      # MEDITEK 공식 로고(CI 원본)
     lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    lp.paragraph_format.space_after = Pt(18)
+    lp.paragraph_format.space_after = Pt(8)
     try:
-        lp.add_run().add_picture(mt.LOGO_H, width=Inches(2.35))
+        lp.add_run().add_picture(mt.LOGO_H, width=Inches(1.95))
     except Exception as e:
         print("로고 삽입 실패(로고 없이 진행):", e)
-    para(doc, COVER_EYEBROW, 9.5, bold=True, color=ACCENT,
-         align=WD_ALIGN_PARAGRAPH.CENTER, spacing=50, after=10)
-    para(doc, COVER_TITLE1, 27, bold=True, color=NAVY,
-         align=WD_ALIGN_PARAGRAPH.CENTER, after=2)
-    para(doc, COVER_TITLE2, 27, bold=True, color=NAVY,
-         align=WD_ALIGN_PARAGRAPH.CENTER, after=14)
-    rule = para(doc, "", align=WD_ALIGN_PARAGRAPH.CENTER, after=14)
-    para_border(rule, "bottom", NAVY, 18, 2)
-    para(doc, COVER_EVENT, 11.5, bold=True, color=NAVY,
-         align=WD_ALIGN_PARAGRAPH.CENTER, after=38)
+    para(doc, COVER_EYEBROW, 9.5, bold=True, color=mt.APOLLO_BLUE_LT,
+         align=WD_ALIGN_PARAGRAPH.CENTER, spacing=50, after=8)
 
-    para(doc, "", after=30)
-    para(doc, f"발행일  {PUBLISH_DATE}", 10, color=MUTED,
-         align=WD_ALIGN_PARAGRAPH.CENTER, after=5)
-    para(doc, ENGINE_NOTE, 11.5, bold=True, color=mt.APOLLO_BLUE,
-         align=WD_ALIGN_PARAGRAPH.CENTER, after=8)
-    para(doc, "", after=30)
+    # 표제 패널 — 옅은 틴트 바탕, 위아래 굵은 괘선
+    pt = doc.add_table(rows=1, cols=1)
+    table_fixed(pt, [_text_width_tw(doc)])
+    cell = pt.rows[0].cells[0]
+    shade_cell(cell, mt.APOLLO_PALE)
+    table_grid(pt, mt.APOLLO_BLUE, sz=18, sides="h")
+    table_cellmar(pt, top=90, bottom=90, left=80, right=80)
+    cell.paragraphs[0]._p.getparent().remove(cell.paragraphs[0]._p)
+    para(cell, COVER_TITLE1, 29, bold=True, color=NAVY,
+         align=WD_ALIGN_PARAGRAPH.CENTER, before=0, after=0, line=1.15)
+    para(cell, COVER_TITLE2, 29, bold=True, color=mt.APOLLO_BLUE_MID,
+         align=WD_ALIGN_PARAGRAPH.CENTER, before=0, after=2, line=1.15)
+    para(cell, "◆ ————————————— ◆", 10, color=mt.APOLLO_BLUE_LT,
+         align=WD_ALIGN_PARAGRAPH.CENTER, after=4)
+    para(cell, ENGINE_NOTE, 12.5, bold=True, color=mt.APOLLO_BLUE,
+         align=WD_ALIGN_PARAGRAPH.CENTER, after=0)
+    para(doc, "", after=6)
+    _band(doc, [mt.APOLLO_BLUE, mt.APOLLO_BLUE_MID, mt.APOLLO_BLUE_LT], after=40)
+
+    # 하단 APOLLO 로고 — 표지에서 가장 큰 브랜드 요소
+    ap = doc.add_paragraph()
+    ap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    ap.paragraph_format.space_after = Pt(6)
+    try:
+        ap.add_run().add_picture(mt.LOGO_APOLLO, width=Inches(COVER_APOLLO_IN))
+    except Exception as e:
+        print("APOLLO 로고 삽입 실패:", e)
+    para(doc, "국가R&D 사업화 유망성 탐색 플랫폼", 13.5, bold=True,
+         color=mt.APOLLO_BLUE_MID, align=WD_ALIGN_PARAGRAPH.CENTER, after=8)
+    _band(doc, [mt.APOLLO_BLUE_LT, mt.APOLLO_BLUE], h=6, after=34)
     add_disclaimer_box(doc)
 
 
 # ---- 개요 · 목차 ------------------------------------------------------------
-def build_intro_toc(doc, demands, n_rec, n_proj, n_sup):
+def build_intro_toc(doc, demands, n_rec, n_proj, n_sup, page_break=True):
     n_dem = len(demands)
-    doc.add_paragraph().paragraph_format.page_break_before = True
+    if page_break:                     # 구역 나누기로 이미 쪽이 넘어간 경우는 생략
+        doc.add_paragraph().paragraph_format.page_break_before = True
     section_label(doc, "행사 개요", before=4)
     para(doc, mt.EVENT["명칭"], 11, bold=True, color=NAVY, after=6)
     t = doc.add_table(rows=0, cols=2)
@@ -319,7 +384,7 @@ def build_intro_toc(doc, demands, n_rec, n_proj, n_sup):
     para(doc, "각 기업은 다음 순서로 구성된다.", 10.5, color=INK, family=SERIF, after=3)
     for ln in ["기업 정보  —  기업명 · 수요기술(확보 희망) · 보유기술(이미 보유) · 핵심 키워드",
                f"최종 추천 과제 {TOPN_LABEL}  —  순위 · 과제명 · 수행기관 · 공급기관 · "
-               "유형 · 수행년도 · 특허 · 매칭 근거",
+               "수행년도 · 특허 · 매칭 근거",
                "추천 과제별 상세 정보표  —  과제고유번호 · 수행기간 · 표준분류 · 연구개발단계 · "
                "수행기관 · 연구수행주체 · 연구책임자 · 국가연구자번호",
                "추천 과제별 상세 매칭 근거  —  연관성 · 기술 적합성 · 추천 과제의 우수성 · "
@@ -334,15 +399,6 @@ def build_intro_toc(doc, demands, n_rec, n_proj, n_sup):
               "기술이전 협의를 시작할 접촉 지점을 뜻한다.",
          9.5, color=MUTED, family=SERIF, align=WD_ALIGN_PARAGRAPH.JUSTIFY,
          line=1.45, before=6, after=4)
-    para(doc, "'유형'은 기업과 공급기관 사이 기술 연계의 방향을 뜻한다.", 9.5, bold=True,
-         color=NAVY, after=2)
-    for k, d in KIND_LEGEND:
-        q = doc.add_paragraph()
-        q.paragraph_format.left_indent = Twips(260)
-        q.paragraph_format.space_after = Pt(2)
-        style_run(q.add_run(f"{k}  "), 9.5, bold=True,
-                  color=KIND_COLOR.get(k, NAVY))
-        style_run(q.add_run(d), 9, color=INK, family=SERIF)
 
     section_label(doc, "목차", before=18)
     para(doc, "기업별 시작 페이지. (Word에서 열면 자동 갱신되며, 갱신 안 되면 목차 위에서 F9)",
@@ -490,7 +546,7 @@ def build_company(doc, k, dm, pidf):
 
     # 최종 추천 Top5 — 적합도 점수는 싣지 않는다(순위로만 제시)
     section_label(doc, f"최종 추천 과제  {TOPN_LABEL}", before=9, after=5)
-    heads = ("순위", "과제명", "수행기관", "공급기관", "유형", "수행년도", "특허", "매칭 근거")
+    heads = ("순위", "과제명", "수행기관", "공급기관", "수행년도", "특허", "매칭 근거")
     t = doc.add_table(rows=1, cols=len(heads))
     table_grid(t, HAIR, 4, "all"); table_cellmar(t, 32, 32, 62, 62)
     for c, txt in zip(t.rows[0].cells, heads):
@@ -508,19 +564,16 @@ def build_company(doc, k, dm, pidf):
                   line=1.14)
         fill_cell(cells[3], tp.get("공급기관", ""), 8.2, align=WD_ALIGN_PARAGRAPH.CENTER,
                   color=ACCENT, bold=True, line=1.14)
-        fill_cell(cells[4], KIND_SHORT.get(tp.get("연계유형", ""), "-"), 8.2,
-                  align=WD_ALIGN_PARAGRAPH.CENTER, bold=True,
-                  color=KIND_COLOR.get(tp.get("연계유형", ""), MUTED), line=1.14)
-        fill_cell(cells[5], "\n".join(year_lines(tp.get("과제설명문", ""))), 8.2,
+        fill_cell(cells[4], "\n".join(year_lines(tp.get("과제설명문", ""))), 8.2,
                   align=WD_ALIGN_PARAGRAPH.CENTER)
         npat = patent_count(tp)
-        fill_cell(cells[6], f"{npat}건", 8.2, align=WD_ALIGN_PARAGRAPH.CENTER,
+        fill_cell(cells[5], f"{npat}건", 8.2, align=WD_ALIGN_PARAGRAPH.CENTER,
                   bold=npat > 0, color=NAVY if npat > 0 else MUTED)
-        fill_cell(cells[7], gm.rename_rnd(tp.get("판단근거", "")), 8.2,
+        fill_cell(cells[6], gm.rename_rnd(tp.get("판단근거", "")), 8.2,
                   family=SERIF, line=1.16)
         for c in cells:
             cell_vcenter(c)
-    table_fixed(t, [620, 1900, 1000, 1080, 700, 800, 440, 2100])
+    table_fixed(t, [620, 2150, 1030, 1100, 800, 440, 2500])
     rows_cantsplit(t)
 
     for tp in dm[TOP_KEY]:
@@ -546,10 +599,17 @@ def build():
                  if t.get("공급기관")})
 
     build_cover(doc)
-    build_intro_toc(doc, demands, n_rec, n_proj, n_sup)
+    # 표지 전용 구역 — 헤더(작은 APOLLO 로고)를 두지 않아 하단 대형 로고와 겹치지 않게 한다.
+    # 표지 전용 구역을 끊는다. add_section() 은 본문 말단의 sectPr(sentinel)을 복제해
+    # 새 단락에 넣고 **sentinel 자체를 돌려준다** — 즉 여기서 얻은 객체는 다음
+    # add_section() 때 마지막 구역으로 밀려난다. 그래서 구역 객체를 들고 있지 말고
+    # 모든 구역을 만든 뒤 인덱스로 다시 잡는다(들고 있으면 개요 설정이 본문에 적용된다).
+    doc.add_section(WD_SECTION.NEW_PAGE)
+    set_margins(doc.sections[-1])
+    build_intro_toc(doc, demands, n_rec, n_proj, n_sup, page_break=False)
 
     doc.add_section(WD_SECTION.NEW_PAGE)
-    body = doc.sections[-1]
+    sec_cover, sec_intro, body = doc.sections[0], doc.sections[1], doc.sections[2]
     set_margins(body)
     set_pgnum_start(body, 1)
     setup_running_header(body)
@@ -557,8 +617,25 @@ def build():
     fp = body.footer.paragraphs[0]
     fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     gr.add_page_field(fp)
-    doc.sections[0].footer.is_linked_to_previous = False
-    setup_cover_header(doc.sections[0])
+
+    sec_cover.footer.is_linked_to_previous = False
+    sec_cover.header.is_linked_to_previous = False            # 표지: 헤더 비움
+    # 개요·목차 구역의 푸터를 **먼저** 끊고 비운다. 표지 푸터를 채운 뒤에 끊으면 그
+    # 내용이 복사돼 개요 페이지까지 버전 표기가 따라붙는다(실측).
+    sec_intro.footer.is_linked_to_previous = False
+    for _p in sec_intro.footer.paragraphs:
+        for _r in list(_p.runs):
+            _r._element.getparent().remove(_r._element)
+    sec_intro.header.is_linked_to_previous = False
+    for _p in sec_intro.header.paragraphs:
+        for _r in list(_p.runs):
+            _r._element.getparent().remove(_r._element)
+    setup_cover_header(sec_intro)                             # 개요·목차: 로고만
+    # 표지 우측 하단 버전 표기 — 구역 푸터에 넣어 페이지 하단에 고정한다
+    cfp = sec_cover.footer.paragraphs[0]
+    cfp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    cfp.paragraph_format.space_before = Pt(0)
+    style_run(cfp.add_run(COVER_VERSION), 7.5, color=MUTED)
 
     build_company_list(doc, ks, demands)
     build_supply_summary(doc, demands)

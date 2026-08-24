@@ -109,6 +109,10 @@ CORRECTIONS = {
     # 조사 오용 — '배열'은 받침이 있어 '과'가 맞다. 일반 규칙으로 처리하지 않는다:
     # '효과'·'치과'·'전계효과' 처럼 '과'가 낱말 안에 든 경우와 규칙만으로는 구분되지 않는다.
     "크리스탈 배열 와": "크리스탈 배열과",
+    # 35B 가 근거문에서 기관명을 잘못 옮긴 경우. 원본 데이터(과제수행기관·공급기관·
+    # 과제설명문)는 모두 '숭실대학교'로 정확하다 — 생성 단계의 오류다.
+    # verify_report_supply 의 '기관명' 검사가 같은 유형을 다시 잡는다.
+    "술흘대학교": "숭실대학교",
 }
 _TABLE = re.compile("|".join(re.escape(k) for k in
                              sorted(CORRECTIONS, key=len, reverse=True))) if CORRECTIONS else None

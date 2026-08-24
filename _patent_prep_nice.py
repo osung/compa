@@ -34,7 +34,12 @@ DROP_COLS = ["유망성점수", "유망성점수_기본", "유망성_raw", "모�
 # 위치 이름으로 바꿔버리는 문제 회피 — '출원일자(YYYYMMDD)' 등은 식별자가 될 수 없다)
 USE_COLS = {"과제번호": "과제번호", "특허명": "특허명", "출원기관명": "출원기관명",
             "특허출원번호": "출원번호", "출원일자(YYYYMMDD)": "출원일자",
-            "특허등록번호": "등록번호", "특허등록일자(YYYYMMDD)": "등록일자"}
+            "특허등록번호": "등록번호", "특허등록일자(YYYYMMDD)": "등록일자",
+            "특허등록상태명": "등록상태"}
+# 실을 특허 상태 — 매칭 코퍼스 필터(match_meditek_supply.ALIVE_STATES)와 같은 규칙.
+# 거절·취하·포기된 특허를 '출원'으로 표시하면 이전 협의가 가능한 것처럼 읽히고,
+# 소멸된 특허를 '등록'으로 표시하면 살아 있는 권리처럼 읽힌다.
+ALIVE_STATES = ("등록", "공개")
 # 산출 레코드에 허용되는 키(이 외에는 싣지 않는다)
 ALLOWED = {"상태", "특허명", "기관", "국가", "출원일", "출원번호", "등록일", "등록번호"}
 _SCORE_HINT = re.compile(r"유망|score|점수|promise", re.I)
@@ -75,12 +80,27 @@ def main():
     ap.add_argument("--src", default=SRC)
     ap.add_argument("--best", default=BEST)
     ap.add_argument("--out", default=os.path.join(SCRATCH, "pid_patents.json"))
+    ap.add_argument("--phase-map", default=os.environ.get(
+        "COMPA_PHASE_MAP", "MEDITEK_260820_연차통합.json"),
+        help="연차 통합 대응표 {대표 과제고유번호: [연차 과제고유번호…]}. "
+             "다년차 과제의 특허를 대표 과제로 모아 싣는다.")
     a = ap.parse_args()
 
     jb = json.load(open(a.best, encoding="utf-8"))
-    pids = {str(t["과제고유번호"]) for e in jb.values()
+    reps = {str(t["과제고유번호"]) for e in jb.values()
             for t in (e.get("top5") or e.get("top10") or [])}
-    print(f"입력: {a.best} | 대상 과제 {len(pids)}건")
+    # 연차 통합: 대표 과제 하나에 전 연차의 특허를 모은다. 연차 번호 → 대표 번호 매핑.
+    members = {}
+    if a.phase_map and os.path.exists(a.phase_map):
+        members = json.load(open(a.phase_map, encoding="utf-8"))
+    rep_of = {}
+    for rep in reps:
+        for q in members.get(rep, [rep]):
+            rep_of[str(q)] = rep
+    pids = set(rep_of)
+    n_multi = sum(1 for rep in reps if len(members.get(rep, [rep])) > 1)
+    print(f"입력: {a.best} | 대표 과제 {len(reps)}건 · 연차 포함 과제번호 {len(pids)}건 "
+          f"(다년차 {n_multi}건, 대응표 {a.phase_map if members else '없음'})")
 
     df = pd.read_pickle(a.src)
     dropped = [c for c in DROP_COLS if c in df.columns]
@@ -89,17 +109,23 @@ def main():
     if missing:
         raise SystemExit(f"[중단] 원본에 없는 컬럼: {missing}")
     df = df[list(USE_COLS)].rename(columns=USE_COLS)
+    n0 = len(df)
+    df = df[df["등록상태"].astype(str).str.strip().isin(ALIVE_STATES)]
+    print(f"특허 상태 필터: {n0} → {len(df)}행 "
+          f"(인정 {'/'.join(ALIVE_STATES)} · 배제 거절·취하·포기·소멸)")
     print(f"원본 {len(df)}행 · 폐기한 점수 컬럼 {len(dropped)}개: {dropped}")
     print(f"사용 컬럼: {list(df.columns)}")
 
     out = {}
     for r in df.itertuples(index=False):
-        hit = [p for p in pids_of(r.과제번호) if p in pids]
+        hit = {rep_of[p] for p in pids_of(r.과제번호) if p in rep_of}
         if not hit:
             continue
         regno, regdt = s(r.등록번호), ymd(r.등록일자)
+        st = s(r.등록상태)
         rec = {
-            "상태": "등록" if (regno or regdt) else "출원",
+            # 상태명을 그대로 쓴다. '공개'는 출원 계류 중이라는 뜻이므로 '출원'으로 적는다.
+            "상태": "등록" if st == "등록" else "출원",
             "특허명": s(r.특허명),
             "기관": org(r.출원기관명),
             "국가": "한국",                        # 국내 출원번호 체계(10…) 기준
@@ -151,7 +177,7 @@ def main():
         f.write(blob)
     n = sum(len(v) for v in out.values())
     reg = sum(1 for v in out.values() for x in v if x["상태"] == "등록")
-    print(f"특허 보유 과제 {len(out)}/{len(pids)} · 특허 {n}건(등록 {reg}/출원 {n - reg})")
+    print(f"특허 보유 과제 {len(out)}/{len(reps)} · 특허 {n}건(등록 {reg}/출원 {n - reg})")
     print(f"저장: {a.out}")
     if out:
         mx = max(out.items(), key=lambda kv: len(kv[1]))

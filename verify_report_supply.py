@@ -54,6 +54,9 @@ TEXT_DEFECTS = [
     (r"[)\]][ \t]+(?:은|는|가|을|를|의|와|과|로|도)(?=[\s,.]|$)", "괄호 뒤 조사 분리"),
     (r"간겅|감연", "확인된 오탈자"),
 ]
+import explain_meditek_top10 as _xp
+import meditek_cite_mark as _cite
+
 SEP = "\n\uFFFF\n"   # 필드 이어 붙일 때 쓰는 경계 표시(패턴이 넘어가지 않게)
 # 표시용 기술명이 이것뿐이면 도출 실패로 본다(제출 서식의 항목 라벨)
 LABEL_LIKE = {"기술명", "수요기술명", "개요", "기업 개요", "기술 개요", "기업개요", "기술개요"}
@@ -77,15 +80,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", default="MEDITEK_260820_보고서.json")
     ap.add_argument("--pkl", default="MEDITEK_260820_매칭.pkl")
-    ap.add_argument("--pdf", default="MEDITEK_공급기관_국가RnD_매칭보고서.pdf")
+    ap.add_argument("--pdf", default="")
     ap.add_argument("--docx", default="")
     ap.add_argument("--patents", default=os.path.join(SCRATCH, "pid_patents.json"))
     ap.add_argument("--src", default=SRC_XLSX)
     ap.add_argument("--final", type=int, default=5)
     a = ap.parse_args()
-    docx = a.docx or max(glob.glob("MEDITEK_공급기관_국가RnD_매칭보고서_v*.docx"),
-                         key=lambda p: int(re.search(r"_v(\d+)\.docx$", p).group(1)),
-                         default="")
+    def _latest(pat, ext):
+        """버전 번호가 가장 큰 산출물. 번호 없는 옛 파일도 후보로 둔다."""
+        cand = glob.glob(pat + f"_v*{ext}")
+        if cand:
+            return max(cand, key=lambda f: int(re.search(r"_v(\d+)" + re.escape(ext),
+                                                         f).group(1)))
+        return pat + ext if os.path.exists(pat + ext) else ""
+
+    BASE = "MEDITEK_공급기관_국가RnD_매칭보고서"
+    docx = a.docx or _latest(BASE, ".docx")
+    a.pdf = a.pdf or _latest(BASE, ".pdf")
 
     res, warn = [], []
     def chk(name, cond, detail=""):
@@ -93,6 +104,8 @@ def main():
 
     J = json.load(open(a.json, encoding="utf-8"))
     PAT = json.load(open(a.patents, encoding="utf-8"))
+    _pa = os.path.join(os.path.dirname(a.patents), "pid_papers.json")
+    PAP = json.load(open(_pa, encoding="utf-8")) if os.path.exists(_pa) else {}
     DF = pd.read_pickle(a.pkl)
     SUP = set(pd.read_excel(a.src, sheet_name="공급기관 리스트")["기관명"]
               .astype(str).str.strip())
@@ -147,10 +160,14 @@ def main():
     need = [v["기업명"] for v in J.values()
             if (v.get("수요기술 내용") or v.get("수요기술명"))]
     chk("수요기술 구분 라벨 대상 기업 존재", bool(need), f"{len(need)}개사")
-    chk("상세근거 4섹션 전건",
-        all(all(f"[{s}]" in t["추천근거_상세"]
-                for s in ("연관성", "기술 적합성", "추천 과제의 우수성", "유사 사례 및 실적"))
-            for t in tops))
+    # 섹션 목록은 explain_meditek_top10.EX_FMT 를 따른다(하드코딩하면 구성이 바뀔 때 어긋난다)
+    chk(f"상세근거 {len(_xp.EX_FMT)}섹션 전건",
+        all(all(f"[{sec}]" in t["추천근거_상세"] for sec in _xp.EX_FMT) for t in tops),
+        " · ".join(_xp.EX_FMT))
+    gone = [sec for sec in ("유사 사례 및 실적",) if sec not in _xp.EX_FMT]
+    if gone:
+        left = sum(t["추천근거_상세"].count(f"[{sec}]") for t in tops for sec in gone)
+        chk(f"제거된 섹션 잔존 없음({', '.join(gone)})", left == 0, f"{left}건")
 
     # ---- 표기 결함(교정 후 잔존) ----
     fields = [v.get(f, "") for v in J.values() for f in tf.COMPANY_FIELDS]
@@ -194,6 +211,125 @@ def main():
             if hit:
                 warn.append(f"{label} 본문 '{lab}' {len(hit)}건 {hit[:2]} "
                             "— 교정 대상 외 필드(과제설명문 파생 등)일 수 있음")
+
+    # ---- 특허명·논문명 강조 표기 --------------------------------------------
+    # 요구사항: 근거문의 특허명·논문명은 **항상 작은따옴표 + 볼드**, 그 외 문장은
+    # **절대 볼드 금지**. 마커 모듈의 셀프테스트와 산출물 실물을 둘 다 검사한다.
+    fails = _cite.selftest()
+    chk("인용 표기 마커 셀프테스트", not fails,
+        f"{len(_cite._CASES)}건 전부 통과" if not fails else f"실패 {fails[:2]}")
+
+    def _n(x):
+        # 마커와 **같은** 정규화를 써야 한다 — 공백·인용부호 제거에 전각/반각 통일까지.
+        # 특허명에 전각 라틴이 섞여 있어(3Ｄ, ＣＴ) 여기서 접지 않으면 정상 인용이
+        # '제목 외'로 잡힌다.
+        return _cite._norm(x)
+
+    titles = {_n(x["특허명"]) for v in PAT.values() for x in v}
+    titles |= {_n(x.get("논문명", "")) for v in PAP.values() for x in v}
+    titles.discard("")
+    # ① 마커가 표시한 모든 인용은 따옴표로 감싸져 있다(모듈 계약)
+    unq, marked = [], 0
+    for k, v in J.items():
+        for t in (v.get("top5") or v.get("top10") or []):
+            pid = str(t["과제고유번호"])
+            ps = [x["특허명"] for x in PAT.get(pid, [])]
+            pa = [x.get("논문명", "") for x in PAP.get(pid, [])]
+            for seg, knd in _cite.mark(t.get("추천근거_상세", ""), ps, pa):
+                if not knd:
+                    continue
+                marked += 1
+                if not (seg.startswith(_cite.QUOTE_L)
+                        and seg.endswith(_cite.QUOTE_R)):
+                    unq.append(seg[:30])
+    chk(f"인용 구간 전건 {_cite.QUOTE_L} {_cite.QUOTE_R} 표기", not unq,
+        f"인용 {marked}건 · 미표기 {len(unq)}건" + (f" {unq[:2]}" if unq else ""))
+    # ② 산출물의 볼드 강조가 전부 실제 제목 조각인가(일반 설명 볼드 금지)
+    if os.path.exists(a.pdf):
+        import pymupdf
+        d = pymupdf.open(a.pdf)
+        nb, bad_b = 0, []
+        for pg in d:
+            for blk in pg.get_text("dict")["blocks"]:
+                for ln in blk.get("lines", []):
+                    for sp in ln["spans"]:
+                        if not sp["font"].startswith("NotoSerifKR-Bold"):
+                            continue
+                        nb += 1
+                        frag = _n(sp["text"]).strip(_cite._Q)
+                        if frag and not any(frag in t for t in titles):
+                            bad_b.append(sp["text"][:34])
+        chk("PDF: 볼드 강조가 전부 특허명·논문명", not bad_b,
+            f"볼드 조각 {nb}개 · 제목 외 {len(bad_b)}개"
+            + (f" {bad_b[:2]}" if bad_b else ""))
+    if os.path.exists(docx):
+        from docx import Document as _Doc
+        dd = _Doc(docx)
+        nb, bad_b = 0, []
+        for para in dd.paragraphs:
+            if not para.text.startswith(("[", "연관성", "기술 적합성")):
+                pass
+            for run in para.runs:
+                if not (run.bold and run.font.name and "Serif" in str(run.font.name)):
+                    continue
+                nb += 1
+                frag = _n(run.text).strip(_cite._Q)
+                if frag and not any(frag in t for t in titles):
+                    bad_b.append(run.text[:34])
+        chk("DOCX: 볼드 강조가 전부 특허명·논문명", not bad_b,
+            f"볼드 런 {nb}개 · 제목 외 {len(bad_b)}개"
+            + (f" {bad_b[:2]}" if bad_b else ""))
+
+    # ---- 근거문의 기관명 -----------------------------------------------------
+    # 35B 가 기관명을 잘못 옮기는 일이 있다(실측: '숭실대학교' → '술흘대학교').
+    # 근거문에서 기관형 표현을 뽑아 **실제 존재하는 기관명**과 대조한다.
+    try:
+        import pickle
+        import compa_match as _cm
+        import meditek_supply_orgs as _so
+        with open(_cm.PROJECT_META, "rb") as _f:
+            _pm = pickle.load(_f)
+        known = {str(v.get("과제수행기관명", "")).strip() for v in _pm.values()}
+        known |= set(_so.include_map()) | set(_so.SUPPLY_ORGS)
+        known |= set(DF["과제수행기관"].astype(str)) | set(DF["공급기관"].astype(str))
+        known |= set(DF["기업명"].astype(str))
+        for v in PAT.values():                     # 특허 출원기관('A 외 2' 형태)
+            for x in v:
+                for o in re.split(r"[;·]| 외 \d+", str(x.get("기관", ""))):
+                    known.add(o.strip())
+        _pn = os.path.join(os.path.dirname(a.patents), "pid_partners.json")
+        if os.path.exists(_pn):
+            for v in json.load(open(_pn, encoding="utf-8")).values():
+                known |= {x["기관명"] for x in v}
+        known = {re.sub(r"\s+", "", x) for x in known if x and x != "nan"}
+        # 특정 기관이 아니라 일반 명사로 쓰이는 표현 — 대조 대상이 아니다
+        GENERIC = {"요양병원", "종합병원", "대학병원", "상급종합병원", "동물병원",
+                   "한방병원", "치과병원", "정신병원", "요양원", "연구소", "연구원",
+                   "산학협력단", "의료원", "병원", "대학", "대학교"}
+        TOK = re.compile(r"[가-힣A-Za-z0-9()·]{2,20}?(?:대학교병원|대학병원|대학교|대학"
+                         r"|의료원|산학협력단|기술지주|연구원|연구소|병원|재단|공단|공사"
+                         r"|과학기술원)")
+        odd = {}
+        for r in DF.to_dict("records"):
+            ctx = re.sub(r"\s+", "", str(r.get("과제명", "")) + str(r.get("과제설명문", "")))
+            for txt in (str(r.get("추천근거_상세", "")), str(r.get("판단근거", ""))):
+                for m in TOK.finditer(txt):
+                    t = m.group(0).strip()
+                    k = re.sub(r"\s+", "", t)
+                    if t in GENERIC or k in known:
+                        continue
+                    # 더 긴 정답의 일부이거나, 정답이 이 표현의 일부면 정상
+                    if any(k in x or x in k for x in known):
+                        continue
+                    if k in ctx:                   # 과제명·설명문에서 잘린 조각
+                        continue
+                    odd.setdefault(t, (r["기업명"], r["rank"]))
+        chk("근거문의 기관명이 실제 기관명과 일치", not odd,
+            f"미확인 {len(odd)}종: "
+            + ", ".join(f"{t}({c} {k}위)" for t, (c, k) in list(odd.items())[:3])
+            if odd else f"정답 기관명 {len(known)}개와 대조 · 미확인 0종")
+    except Exception as e:
+        warn.append(f"기관명 검사 생략: {e}")
 
     print("=" * 84)
     print("보고서 검증")

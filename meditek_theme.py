@@ -20,8 +20,14 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
 LOGO_H = os.path.join(ASSETS, "meditek_logo_h.png")      # 좌우조합형(표지용)
-LOGO_SYMBOL = os.path.join(ASSETS, "meditek_symbol.png")  # 심볼만
+LOGO_SYMBOL = os.path.join(ASSETS, "meditek_symbol.png")  # 심볼+워드마크(파일명과 달리)
+# 워드마크를 잘라낸 순수 심볼 — 표지 워터마크용. meditek_symbol.png 에서 워드마크
+# 시작 열(어두운 화소 최소 x)의 6px 앞을 잘라 만들었다.
+LOGO_MARK = os.path.join(ASSETS, "meditek_symbol_only.png")
 LOGO_V = os.path.join(ASSETS, "meditek_logo_v.png")       # 상하조합형
+# APOLLO 로고(밝은 배경용) — 러닝헤더와 표지 하단에 같은 파일을 쓴다
+LOGO_APOLLO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "APOLLO_logo_top.png")
 
 # ---- CI 색상 -----------------------------------------------------------------
 # 보고서 전체 룩앤필은 APOLLO CI(파랑)를 쓴다. MEDITEK 색은 로고 자체와 행사 맥락에만

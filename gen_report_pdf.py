@@ -89,6 +89,49 @@ _f6 = os.path.join(SCRATCH, "demand_field.json")     # 6T 분류(없으면 장 �
 field6t = json.load(open(_f6, encoding="utf-8")) if os.path.exists(_f6) else {}
 _pp = os.path.join(SCRATCH, "pid_patents.json")
 patents = json.load(open(_pp, encoding="utf-8")) if os.path.exists(_pp) else {}
+_pn = os.path.join(SCRATCH, "pid_partners.json")
+# 공동참여기관 — 있는 과제만 정보표에 행을 넣는다(커버리지 약 21%)
+partners = json.load(open(_pn, encoding="utf-8")) if os.path.exists(_pn) else {}
+_pa = os.path.join(SCRATCH, "pid_papers.json")
+papers = json.load(open(_pa, encoding="utf-8")) if os.path.exists(_pa) else {}
+import meditek_cite_mark as _cite                                   # noqa: E402
+CITE_PAT_COLOR, CITE_PAP_COLOR = "#0B4F8A", "#1F6F52"
+# 논문 표를 낼 과제(단계 도입용). 빈 값이면 전체 과제에 낸다.
+PAPER_PIDS = {x.strip() for x in os.environ.get("COMPA_PAPER_PIDS", "").split(",")
+              if x.strip()}
+# 논문은 과제당 최신 이 건수까지 싣고, 근거문이 인용한 논문은 상한과 무관하게 반드시
+# 넣는다(강조된 제목을 같은 페이지에서 확인할 수 있어야 한다). 0 이면 전건.
+PAPER_MAX = int(os.environ.get("COMPA_PAPER_MAX", "10"))
+# 인용 집계는 **전 기업 합집합**으로 한 번만 만든다 — 기업별로 구하면 같은 과제가
+# 기업마다 다른 논문 표를 보이게 된다(특허에서 지적된 혼선과 같은 문제).
+PAPER_CITED = _cite.cited_paper_map(demands, patents, papers)
+
+
+def paper_caption(n_show):
+    """논문 표 제목 — 특허 표와 같은 형식(수록 건수)."""
+    return f"논문 실적  ({n_show}건)"
+
+
+def paper_note(n_all, n_show):
+    """표를 잘라 실을 때 표 **아래**에 붙일 안내. 전건이면 빈 문자열."""
+    if n_show >= n_all:
+        return ""
+    return (f"※ 지면 관계상 총 {n_all}건 중 최신 및 본문 인용 논문 {n_show}건만 "
+            "수록하였음.")
+
+
+def cite_markup(body, pid):
+    """근거문 → reportlab 인라인 마크업. 특허명·논문명만 강조색+굵게."""
+    out = []
+    pats = [x.get("특허명", "") for x in patents.get(str(pid), [])]
+    paps = [x.get("논문명", "") for x in papers.get(str(pid), [])]
+    for seg, knd in _cite.mark(body, pats, paps):
+        if knd:
+            col = CITE_PAT_COLOR if knd == "특허" else CITE_PAP_COLOR
+            out.append(f'<font name="Serif-B" color="{col}">{esc(seg)}</font>')
+        else:
+            out.append(esc(seg))
+    return "".join(out)
 
 def fmt_period(desc):
     m = re.search(r'(\d{4})년\s*\d{1,2}월\s*\d{1,2}일에 시작.*?(\d{4})년\s*\d{1,2}월\s*\d{1,2}일에 종료', desc or "")
@@ -348,9 +391,22 @@ def top_detail(tp, dk_no, dk_name):
         else:
             cell += [P("", 9), P("", 9)]
         rows.append(cell)
-    st = base_grid([("BACKGROUND", (0, 0), (0, -1), LABELBG), ("BACKGROUND", (2, 0), (2, -1), LABELBG)])
+    # 라벨 열 음영은 **정보표 행에만** 준다. (2,0)-(2,-1) 로 주면 아래에 덧붙는
+    # 공동참여기관 행의 3열(병합된 값 칸)까지 칠해져 라벨처럼 보인다.
+    n_info = len(rows)
+    st = base_grid([("BACKGROUND", (0, 0), (0, n_info - 1), LABELBG),
+                    ("BACKGROUND", (2, 0), (2, n_info - 1), LABELBG)])
     if len(info) % 2 == 1:
-        st.append(("BACKGROUND", (2, -1), (3, -1), colors.white))
+        st.append(("BACKGROUND", (2, n_info - 1), (3, n_info - 1), colors.white))
+    # 공동참여기관 — 값이 길어 4열에 안 들어가므로 한 줄을 통째로 쓴다(값 칸 병합)
+    parts = partners.get(str(pid), [])
+    if parts:
+        rows.append([P("공동참여기관", 9, NAVY, bold=True),
+                     P(" · ".join(x["기관명"] for x in parts), 9), "", ""])
+        r = len(rows) - 1
+        st += [("SPAN", (1, r), (3, r)),
+               ("BACKGROUND", (0, r), (0, r), LABELBG),
+               ("BACKGROUND", (1, r), (3, r), colors.white)]
     block.append(mktable(rows, [LW, VW, LW, VW], st))
     block.append(Spacer(1, 9))                    # 과제설명(정보표)↔적합성 판단: 여유 ↑
     block.append(Paragraph(f'<font name="Sans-B" color="#FFFFFF" backColor="{_hx(BLUE)}"> 적합성 판단 </font>'
@@ -359,7 +415,8 @@ def top_detail(tp, dk_no, dk_name):
     block.append(section_label("상세 매칭 근거", before=9, after=3, size=10.5))
     for tt, body in split_sections(tp.get("추천근거_상세", "")):
         block.append(Paragraph(f'<font name="Sans-B" color="{_hx(BLUE)}">[{esc(tt)}]</font>  '
-                               f'<font name="Serif" color="{_hx(INK)}">{esc(body)}</font>',
+                               f'<font name="Serif" color="{_hx(INK)}">'
+                               f'{cite_markup(body, pid)}</font>',
                                ParagraphStyle("sec", fontSize=9, leading=13.5, alignment=TA_JUSTIFY, spaceAfter=4)))
     story.append(KeepTogether(block))
     # ---- 특허 실적: 등록 우선, 출원정보 병기. 다년도 전 연도 포함. 없으면 '없음' 표기 ----
@@ -387,6 +444,31 @@ def top_detail(tp, dk_no, dk_name):
         story.append(section_label("특허 실적", before=10, after=3, size=10.5))
         story.append(mktable([[P("특허 실적 없음", 8.5, MUTED, TA_CENTER)]], [CW],
                      base_grid([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFBFD"))], fontsize=8.5)))
+    # ---- 논문 실적: 특허 표 바로 아래. 중요한 항목만(제목·학술지·주저자·연도·DOI) ----
+    # PAPER_PIDS 가 지정되면 그 과제만 낸다(단계 도입·검토용). 빈 값이면 전체.
+    paps_all = papers.get(pid, [])
+    paps, n_all = _cite.pick_papers(paps_all, PAPER_CITED.get(str(pid), set()),
+                                    PAPER_MAX or len(paps_all))
+    if paps and (not PAPER_PIDS or str(pid) in PAPER_PIDS):
+        story.append(section_label(paper_caption(len(paps)),
+                                   before=10, after=3, size=10.5))
+        rows = [[P(x, 8, HEADFG, TA_CENTER, bold=True) for x in
+                 ("논문명", "학술지명", "주저자", "게재년도", "DOI")]]
+        for pp in paps:
+            rows.append([P(pp.get("논문명", ""), 8, INK, leading=10),
+                         P(pp.get("학술지명", ""), 8, INK, leading=10),
+                         P(pp.get("주저자", ""), 8, INK, TA_CENTER, leading=10),
+                         P(pp.get("게재년도", ""), 8, INK, TA_CENTER),
+                         P(pp.get("DOI", ""), 7.5, INK, leading=9.6)])
+        st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)], fontsize=8)
+        for i in range(2, len(rows), 2):
+            st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
+        story.append(mktable(rows, [62 * mm, 34 * mm, 20 * mm, 12 * mm,
+                                    CW - 128 * mm], st))
+        note = paper_note(n_all, len(paps))
+        if note:                        # 표 내부와 같은 글꼴·크기(Sans 8), 색만 낮춘다
+            story.append(Spacer(1, 2))
+            story.append(P(note, 8, MUTED, TA_LEFT))
     story.append(PageBreak())
 
 # ---- 조립 ----

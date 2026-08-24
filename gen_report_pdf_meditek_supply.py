@@ -7,7 +7,9 @@ gen_report_pdf.py 의 조판·과제 상세 블록을 그대로 쓰고 표지/�
 입력: MEDITEK_260820_보고서.json, $COMPA_SCRATCH/{pid_fields,pid_patents}.json
 사용: COMPA_SCRATCH=<scratch> python gen_report_pdf_meditek_supply.py
 """
+import glob
 import os
+import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -45,8 +47,24 @@ print(f"[표기 교정] {tf.report_stats()}")
 gp.pidf = gp.pidf.get("fields", gp.pidf)       # {"name2pid":…,"fields":…} → pid 직접 조회
 gp.DEMAND_TAG_FMT = "No.{no}"                  # 매칭 단위가 수요가 아니라 기업이다
 
-OUT = os.environ.get("MEDITEK_SUPPLY_PDF_OUT",
-                     os.path.join(HERE, "MEDITEK_공급기관_국가RnD_매칭보고서.pdf"))
+# 산출 PDF 도 docx 와 같은 방식으로 버전 번호를 붙인다(덮어쓰기 방지·이력 보존).
+PDF_BASE = os.path.join(HERE, "MEDITEK_공급기관_국가RnD_매칭보고서")
+
+
+def next_pdf_path():
+    """docx 와 **같은 번호**를 쓴다 — 둘은 같은 데이터로 함께 생성되는 한 쌍이므로
+    _v24.docx / _v24.pdf 가 같은 보고서를 가리키는 것이 쓰기 편하다.
+    docx 가 없으면 PDF 자체 번호를 하나 올린다."""
+    dv = [int(m.group(1)) for f in glob.glob(PDF_BASE + "_v*.docx")
+          if (m := re.search(r"_v(\d+)\.docx$", f))]
+    if dv:
+        return f"{PDF_BASE}_v{max(dv)}.pdf"
+    pv = [int(m.group(1)) for f in glob.glob(PDF_BASE + "_v*.pdf")
+          if (m := re.search(r"_v(\d+)\.pdf$", f))]
+    return f"{PDF_BASE}_v{(max(pv) + 1) if pv else 1}.pdf"
+
+
+OUT = os.environ.get("MEDITEK_SUPPLY_PDF_OUT", next_pdf_path())
 TOP_KEY = gs.TOP_KEY
 
 
@@ -63,28 +81,105 @@ def _counts(d):
     return n_rec, n_proj, n_sup
 
 
+# ---- 표지 -------------------------------------------------------------------
+# 표지는 캔버스 배경(밴드·워터마크)과 스토리(로고·표제·발행일·APOLLO 로고)를 겹쳐 만든다.
+# 배경 장식은 플로어블로 만들 수 없어서 Doc._cover 를 갈아끼운다.
+COVER_APOLLO_W = 76 * mm              # 표지 하단 APOLLO 로고 폭(러닝헤더는 29mm)
+_A_BLUE = colors.HexColor("#" + mt.APOLLO_BLUE)
+_A_MID = colors.HexColor("#" + mt.APOLLO_BLUE_MID)
+_A_LT = colors.HexColor("#" + mt.APOLLO_BLUE_LT)
+_A_TINT = colors.HexColor("#" + mt.APOLLO_PALE)
+
+
+def _cover_bg(self, c, d):
+    """표지 배경 — 옅은 심볼 워터마크와 우측 하단 버전 표기.
+
+    상·하단·좌측의 색 밴드는 넣지 않는다(요청). 표지의 구조는 표제 패널의
+    괘선과 구획 밴드만으로 만든다.
+    """
+    W = gp.PAGE_W
+    try:                       # 워드마크를 잘라낸 순수 심볼을 아주 옅게
+        c.saveState()
+        c.setFillAlpha(0.04)
+        ww, hh = mt.logo_size(mt.LOGO_MARK, 62 * mm)
+        c.drawImage(mt.LOGO_MARK, W - gp.RM - ww * 0.55, 8 * mm,
+                    width=ww, height=hh, mask="auto")
+        c.restoreState()
+    except Exception:
+        pass
+    # 버전 관리용 표기 — 우측 하단에 작게(발행일 박스를 대신한다)
+    c.saveState()
+    c.setFont("Sans", 7.5)
+    c.setFillColor(MUTED)
+    c.drawRightString(W - gp.RM, gp.BM - 4, gs.COVER_VERSION)
+    c.restoreState()
+
+
+gp.Doc._cover = _cover_bg          # 표지에는 러닝헤더 로고를 그리지 않는다(하단 대형 로고와 중복)
+
+
+def _band(widths, cols, h):
+    """색 밴드 한 줄 — 폭·색 목록으로 만든다(표제 패널 장식용)."""
+    return mktable([[""] * len(cols)], widths,
+                   [("BOTTOMPADDING", (0, 0), (-1, -1), h),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0)]
+                   + [("BACKGROUND", (i, 0), (i, 0), col) for i, col in enumerate(cols)])
+
+
 def cover():
     s = gp.story
-    s.append(Spacer(1, 22 * mm))
+    s.append(Spacer(1, 8 * mm))
     try:                                          # MEDITEK 공식 로고(CI 원본)
-        w, h = mt.logo_size(mt.LOGO_H, 60 * mm)
+        w, h = mt.logo_size(mt.LOGO_H, 56 * mm)
         img = RLImage(mt.LOGO_H, width=w, height=h)
         img.hAlign = "CENTER"
         s.append(img)
-        s.append(Spacer(1, 7 * mm))
+        s.append(Spacer(1, 6 * mm))
     except Exception as e:
         print("로고 삽입 실패(로고 없이 진행):", e)
-    s.append(P(gs.COVER_EYEBROW, 9.5, ACCENT, TA_CENTER, bold=True, space=10))
-    s.append(P(gs.COVER_TITLE1, 27, NAVY, TA_CENTER, bold=True, space=3))
-    s.append(P(gs.COVER_TITLE2, 27, NAVY, TA_CENTER, bold=True, space=10))
-    s.append(mktable([[""]], [70 * mm], [("LINEBELOW", (0, 0), (-1, -1), 1.5, NAVY)]))
-    s.append(Spacer(1, 5 * mm))
-    s.append(P(gs.COVER_EVENT, 11.5, NAVY, TA_CENTER, bold=True, space=18))
+    s.append(P(gs.COVER_EYEBROW, 9.5, _A_LT, TA_CENTER, bold=True, space=11))
 
-    s.append(Spacer(1, 10 * mm))       # 건수 요약은 표지에서 빼고 개요에만 둔다
-    s.append(P(f"발행일  {gs.PUBLISH_DATE}", 10, MUTED, TA_CENTER, space=4))
-    s.append(P(gs.ENGINE_NOTE, 11.5, colors.HexColor("#" + mt.APOLLO_BLUE),
-               TA_CENTER, bold=True, space=16))
+    # 표제 패널 — 옅은 틴트 바탕에 상하 굵은 괘선, 그 안에 표제·장식룰·엔진 표기
+    inner = ParagraphStyle("cti", fontName="Sans-B", fontSize=31, textColor=NAVY,
+                           alignment=TA_CENTER, leading=39, spaceAfter=0)
+    sub = ParagraphStyle("cts", fontName="Sans-B", fontSize=31, textColor=_A_MID,
+                         alignment=TA_CENTER, leading=39, spaceAfter=0)
+    dia = ParagraphStyle("ctd", fontName="Sans", fontSize=10, textColor=_A_LT,
+                         alignment=TA_CENTER, leading=15, spaceAfter=0)
+    eng = ParagraphStyle("cte", fontName="Sans-B", fontSize=12.5, textColor=_A_BLUE,
+                         alignment=TA_CENTER, leading=17, spaceAfter=0)
+    panel = [[Paragraph(esc(gs.COVER_TITLE1), inner)],
+             [Paragraph(esc(gs.COVER_TITLE2), sub)],
+             [Paragraph("◆ ————————————— ◆", dia)],
+             [Paragraph(esc(gs.ENGINE_NOTE), eng)]]
+    s.append(mktable(panel, [CW], [
+        ("BACKGROUND", (0, 0), (-1, -1), _A_TINT),
+        ("LINEABOVE", (0, 0), (-1, 0), 2.4, _A_BLUE),
+        ("LINEBELOW", (0, -1), (-1, -1), 2.4, _A_BLUE),
+        ("TOPPADDING", (0, 0), (0, 0), 15), ("BOTTOMPADDING", (0, -1), (0, -1), 15),
+        ("TOPPADDING", (0, 1), (0, -1), 2), ("BOTTOMPADDING", (0, 0), (0, -2), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8)]))
+    s.append(Spacer(1, 3 * mm))
+    s.append(_band([CW * 0.34, CW * 0.33, CW * 0.33], (_A_BLUE, _A_MID, _A_LT), 2.6))
+
+    # 하단 APOLLO 로고 — 표지에서 가장 큰 브랜드 요소
+    s.append(Spacer(1, 24 * mm))
+    try:
+        w, h = mt.logo_size(mt.LOGO_APOLLO, COVER_APOLLO_W)
+        lg = RLImage(mt.LOGO_APOLLO, width=w, height=h)
+        lg.hAlign = "CENTER"
+        s.append(lg)
+        s.append(Spacer(1, 5 * mm))
+        s.append(P("국가R&D 사업화 유망성 탐색 플랫폼", 13.5, _A_MID, TA_CENTER,
+                   bold=True, space=0))
+        s.append(Spacer(1, 4 * mm))
+        s.append(_band([CW * 0.5, CW * 0.5], (_A_LT, _A_BLUE), 2.0))
+    except Exception as e:
+        print("APOLLO 로고 삽입 실패:", e)
+
+    s.append(Spacer(1, 20 * mm))
     s.append(mktable([[Paragraph(
         f'<font name="Sans-B" color="#A93226" size="10.5">※  유의사항</font><br/>'
         f'<font name="Sans" color="#7B241C" size="9.5">{esc(gp.DISCLAIMER)}</font>',
@@ -122,7 +217,7 @@ def intro_toc(ks):
     s.append(P("각 기업은 다음 순서로 구성된다.", 10.5, INK, family="Serif", space=3))
     for ln in ["기업 정보 — 기업명 · 수요기술(확보 희망) · 보유기술(이미 보유) · 핵심 키워드",
                f"최종 추천 과제 {gs.TOPN_LABEL} — 순위 · 과제명 · 수행기관 · 공급기관 · "
-               "유형 · 수행년도 · 특허 · 매칭 근거",
+               "수행년도 · 특허 · 매칭 근거",
                "추천 과제별 상세 정보표 — 과제고유번호 · 수행기간 · 표준분류 · 연구개발단계 · "
                "수행기관 · 연구수행주체 · 연구책임자 · 국가연구자번호",
                "추천 과제별 상세 매칭 근거 — 연관성 · 기술 적합성 · 추천 과제의 우수성 · "
@@ -135,13 +230,6 @@ def intro_toc(ks):
     s.append(P("'공급기관'은 해당 과제를 수행한 기관의 기술이전 창구(산학협력단·기술지주 등)로, "
                "기술이전 협의를 시작할 접촉 지점을 뜻한다.",
                9.5, MUTED, TA_JUSTIFY, family="Serif", leading=14, space=4))
-    s.append(P("'유형'은 기업과 공급기관 사이 기술 연계의 방향을 뜻한다.", 9.5, NAVY,
-               bold=True, space=2))
-    for k, dsc in gs.KIND_LEGEND:
-        s.append(Paragraph(
-            f'<font name="Sans-B" color="#{gs.KIND_COLOR.get(k, mt.APOLLO_BLUE)}">{esc(k)}</font>'
-            f'  <font name="Serif" color="{gp._hx(INK)}">{esc(dsc)}</font>',
-            ParagraphStyle("kl", fontSize=9, leading=13.5, leftIndent=14, spaceAfter=2)))
 
     s.append(section_label("목차", before=14))
 
@@ -279,7 +367,7 @@ def company_block(k, dm):
 
     s.append(section_label(f"최종 추천 과제  {gs.TOPN_LABEL}", before=4, after=5, size=12))
     # 적합도 점수는 싣지 않는다(순위로만 제시)
-    heads = ("순위", "과제명", "수행기관", "공급기관", "유형", "수행년도", "특허", "매칭 근거")
+    heads = ("순위", "과제명", "수행기관", "공급기관", "수행년도", "특허", "매칭 근거")
     rows = [[P(x, 9, HEADFG, TA_CENTER, bold=True) for x in heads]]
     for tp in dm[TOP_KEY]:
         n = npat(tp)
@@ -288,10 +376,6 @@ def company_block(k, dm):
                      P(tp.get("수행기관", ""), 8.0, INK, TA_CENTER, leading=10.2),
                      P(tp.get("공급기관", ""), 8.0, ACCENT, TA_CENTER, bold=True,
                        leading=10.2),
-                     P(gs.KIND_SHORT.get(tp.get("연계유형", ""), "-").replace("\n", " "),
-                       7.8, colors.HexColor("#" + gs.KIND_COLOR.get(
-                           tp.get("연계유형", ""), mt.APOLLO_GREY)),
-                       TA_CENTER, bold=True, leading=9.6),
                      P(gp.year_cell(tp.get("과제설명문", "")), 8.0, INK, TA_CENTER),
                      P(f"{n}건", 8.0, NAVY if n else MUTED, TA_CENTER, bold=bool(n)),
                      P(gm.rename_rnd(tp.get("판단근거", "")), 8.0, INK, TA_LEFT,
@@ -299,8 +383,8 @@ def company_block(k, dm):
     st = base_grid([("BACKGROUND", (0, 0), (-1, 0), HEADBG)])
     for i in range(2, len(rows), 2):
         st.append(("BACKGROUND", (0, i), (-1, i), ZEBRA))
-    s.append(mktable(rows, [11 * mm, 36 * mm, 21 * mm, 23 * mm, 15 * mm, 15 * mm, 10 * mm,
-                            CW - 131 * mm], st))
+    s.append(mktable(rows, [11 * mm, 41 * mm, 22 * mm, 24 * mm, 15 * mm, 10 * mm,
+                            CW - 123 * mm], st))
     s.append(PageBreak())
     for tp in dm[TOP_KEY]:
         # 상세 페이지 상단 헤더는 기업명으로 표시한다(기술명이 길어 식별성이 떨어짐)

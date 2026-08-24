@@ -5,7 +5,7 @@ match_meditek_top10.py 는 순위 선정까지만 하므로(적합도·우수성
 여기서 35B 로 생성한다. 텍스트는 모두 모델이 쓰고, 이 스크립트는 프롬프트 구성과
 체크포인트 관리만 한다.
 
-  · 추천근거_상세 : 4섹션(연관성 · 기술 적합성 · 추천 과제의 우수성 · 유사 사례 및 실적).
+  · 추천근거_상세 : 3섹션(연관성 · 기술 적합성 · 추천 과제의 우수성).
                    보유기술이 있으면 '기술 적합성'을 보강·고도화 관점으로, 없으면 수요 충족
                    관점으로 쓰게 가이드만 바꾼다 — 섹션 제목은 같게 두어 보고서에 매칭 기준
                    (수요기술/기보유기술)이 드러나지 않게 한다.
@@ -39,12 +39,20 @@ RETRY = 2                  # 금지 표현(매칭 기준 노출)이 섞였을 �
 # ---- 상세 근거 섹션 구성 ----------------------------------------------------
 # 섹션 제목은 두 경우 모두 동일하게 둔다 — 보고서에 '수요기술/기보유기술' 중 무엇을
 # 기준으로 매칭했는지가 드러나지 않아야 한다(관점 차이는 가이드 문구로만 준다).
-EX_FMT = ["연관성", "기술 적합성", "추천 과제의 우수성", "유사 사례 및 실적"]
+# '유사 사례 및 실적' 은 뺐다 — 실측 130행에서 앞 세 섹션과 어휘 62.6% 중복, 문장 완전
+# 중복 20%, 새 성과를 제시한 행은 18%뿐이었다. 지시문('과제의 논문·특허 실적이 수요
+# 해결에 주는 시사점')이 '추천 과제의 우수성'('연구성과(논문/특허)…강점')과 겹치고,
+# 특허·논문 실적 표를 바로 아래에 싣게 되어 나열의 정보 가치도 사라졌다.
+EX_FMT = ["연관성", "기술 적합성", "추천 과제의 우수성"]
 
 _G_COMMON = {
     # 유망성 점수는 제공하지 않으므로 근거로 삼지 않는다(점수·등급 언급 금지).
+    # 독자가 검증할 수 있도록 주어진 건수는 반드시 숫자로 인용하게 한다(비율 표현만 쓰면
+    # '상위 10% 수준' 같은 추상적 평가만 남아 근거의 확인 가능성이 떨어진다).
     "추천 과제의 우수성": ("과제의 연구성과(논문·특허)·수행기관 역량·연구 규모 등 추천 과제의 강점. "
-                   "특허·논문 건수와 상위비율이 주어지면 그 수치가 뜻하는 강점을 함께 서술하되, "
+                   "project.patent_list_count(특허 건수)와 paper_list_count(논문 건수)로 주어진 "
+                   "수치는 반드시 숫자로 인용해 서술한다(예: '특허 6건, 논문 3건의 성과를 확보'). "
+                   "건수가 0이면 인용하지 말고 다른 강점을 서술한다. 상위비율이 주어지면 함께 쓰되, "
                    "주어지지 않은 점수·등급·유망성 수치는 언급하지 말 것"),
     "유사 사례 및 실적": cm._EX_GUIDE["유사 사례 및 실적"],
 }
@@ -103,6 +111,11 @@ def debanned(text):
 
 def log(*a):
     print(*a, flush=True)
+
+
+# 모델 비교용 계측(지시 준수·포맷 안정성). 생성 로직에는 영향 없음.
+STATS = {"상세_호출": 0, "상세_재시도": 0, "상세_최종위반": 0, "상세_섹션부족": 0,
+         "근거_호출": 0, "근거_재시도": 0, "근거_최종위반": 0}
 
 
 # ---- 표기 정리 --------------------------------------------------------------
@@ -188,19 +201,24 @@ def payload_for(unit, kws, proj):
 
 
 def gen_detail(unit, kws, proj, retry=RETRY):
-    """4섹션 상세 근거 → 한 셀 텍스트. 금지 표현이 섞이면 다시 생성한다."""
+    """3섹션 상세 근거 → 한 셀 텍스트. 금지 표현이 섞이면 다시 생성한다."""
     p, fmt = payload_for(unit, kws, proj)
     msgs = cm.build_messages(p, direction="company")
     msgs[-1]["content"] += "\n" + _BAN_RULE
     text = ""
+    STATS["상세_호출"] += 1
     for i in range(retry + 1):
         out = cm.stream_explanation(msgs, max_tokens=1400, temperature=0.2 if i == 0 else 0.0,
                                     top_p=0.9, expected_keys=fmt)
         secs = cm.parse_sections(out, tuple(fmt))
         parts = [f"[{k}] {secs.get(k, '').strip()}" for k in fmt if secs.get(k, "").strip()]
+        if len(parts) < len(fmt):
+            STATS["상세_섹션부족"] += 1
         text = cm.normalize_spacing("\n\n".join(parts) if parts else out.strip())
         if not BANNED.search(text):
             return text
+        STATS["상세_재시도"] += 1
+    STATS["상세_최종위반"] += 1
     return text                                  # 남은 위반은 JSON 조립 단계에서 치환
 
 
@@ -261,6 +279,7 @@ def gen_reason(unit, proj, retry=RETRY):
     msgs = ([{"role": "system", "content": _MR_SYS}] + _MR_FEWSHOT
             + [{"role": "user", "content": user}])
     out = ""
+    STATS["근거_호출"] += 1
     for _ in range(retry + 1):
         try:
             raw = cm.stream_explanation(msgs, max_tokens=120, temperature=0.0,
@@ -274,6 +293,8 @@ def gen_reason(unit, proj, retry=RETRY):
         out = cm.normalize_spacing(out[:120])
         if not BANNED.search(out):
             return out
+        STATS["근거_재시도"] += 1
+    STATS["근거_최종위반"] += 1
     return out                                   # 남은 위반은 JSON 조립 단계에서 치환
 
 
@@ -405,6 +426,7 @@ def main():
              if BANNED.search(t["추천근거_상세"]) or BANNED.search(t["판단근거"])]
     log(f"금지표현(매칭 기준) — 모델 출력 잔존 {raw_v}건(치환 처리) · 최종 산출 {len(out_v)}건"
         + (f" {out_v[:5]}" if out_v else ""))
+    log(f"모델: {cm.MODEL_ID} · 계측 {STATS}")
     if n_ex < n_rec:
         log(f"! 상세근거 누락 {n_rec - n_ex}건 — 다시 실행하면 누락분만 생성한다")
 

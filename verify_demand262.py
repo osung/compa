@@ -51,7 +51,8 @@ def main():
     ap.add_argument("--manual", default=MANUAL)
     a = ap.parse_args()
 
-    xl = pd.read_excel(a.out_prefix + ".xlsx", dtype=str).fillna("")
+    xl = pd.read_excel(a.out_prefix + ".xlsx", sheet_name="기업정보", dtype=str).fillna("")
+    rv = pd.read_excel(a.out_prefix + ".xlsx", sheet_name="사업자번호 검토", dtype=str).fillna("")
     pk = pd.read_pickle(a.out_prefix + ".pkl").astype(str).replace({"<NA>": "", "nan": ""})
     d = pymupdf.open(a.pdf)
     pages = {int(p): d[int(p) - 1].get_text() for p in xl["조사서 쪽"]}
@@ -166,11 +167,17 @@ def main():
     report("사업자번호 유무↔근거 일관", [(r["기업명"], r["사업자번호 근거"]) for _, r in firms.iterrows()
                                    if bool(r["사업자번호"]) != any(t in r["사업자번호 근거"] for t in fill)
                                    and "사업자번호 없음" not in r["사업자번호 근거"]])
-    report("검토 필요인데 후보 없음", [r["기업명"] for _, r in firms.iterrows()
-                                 if "검토" in r["사업자번호 근거"] and not r["사업자번호 후보"]])
+    cand = dict(zip(rv["기업명"], rv["사업자번호 후보"]))
+    report("기업정보 시트에 후보 열 없음", [c for c in xl.columns if "후보" in c])
+    report("검토 시트 ↔ 기업정보 일치", [r["기업명"] for _, r in rv.iterrows()
+                                   if r["기업명"] not in set(firms["기업명"])
+                                   or r["사업자번호"] != firms.set_index("기업명").at[r["기업명"], "사업자번호"]])
+    report("검토 필요·수동 확인인데 검토 시트에 없음",
+           [r["기업명"] for _, r in firms.iterrows()
+            if ("검토" in r["사업자번호 근거"] or r["사업자번호 근거"].startswith("수동")) and not cand.get(r["기업명"])])
     report("자동 채움이 후보 1순위와 다름", [r["기업명"] for _, r in firms.iterrows()
-                                     if r["사업자번호"] and r["사업자번호 후보"] and r["사업자번호 근거"] != "수동 선택"
-                                     and not r["사업자번호 후보"].startswith(r["사업자번호"])])
+                                     if r["사업자번호"] and cand.get(r["기업명"]) and r["사업자번호 근거"] != "수동 선택"
+                                     and not cand[r["기업명"]].startswith(r["사업자번호"])])
     if os.path.exists(a.manual):
         sel = json.load(open(a.manual, encoding="utf-8"))
         u = firms.set_index("기업명")

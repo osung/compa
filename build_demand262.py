@@ -497,17 +497,30 @@ def main():
             df.at[i, "비고"] += f"6T 체크({r['수요기술 분야(6T)']})가 기술번호 분야와 다름; "
     df["비고"] = df["비고"].str.rstrip("; ")
 
-    cols = ["번호", "기업명", "사업자번호", "사업자번호 근거", "사업자번호 후보", "법인번호",
+    # 동명 후보 목록은 매칭에 쓰지 않으므로 기업정보에서 빼고, 사업자번호를 정한 근거로
+    # '사업자번호 검토' 시트에 기업 단위로 남긴다.
+    review = (df[df["사업자번호 후보"] != ""]
+              .groupby("기업명", sort=False)
+              .agg(기술번호=("기술번호", ", ".join), 수요기술명=("수요기술명", " / ".join),
+                   사업자번호=("사업자번호", "first"), 근거=("사업자번호 근거", "first"),
+                   후보=("사업자번호 후보", "first"))
+              .reset_index())
+    review["후보"] = review["후보"].str.replace("; ", "\n")
+    review = review.rename(columns={"근거": "사업자번호 근거", "후보": "사업자번호 후보"})
+
+    cols = ["번호", "기업명", "사업자번호", "사업자번호 근거", "법인번호",
             "KIPRIS 출원인코드", "업종", "지역", "기업설명", "기술번호", "수요기술명", "수요기술명(조사서)", "수요기술 분야(6T)",
             "국가과학기술표준분류(대)", "국가과학기술표준분류(중)", "전략분야",
             "수요기술 내용", "수요기술 사양", "수요기술 상세내용", "예상 적용 제품 및 서비스",
             "수요유형", "기술도입 목적", "기술거래 희망 유형", "도입희망금액", "도입희망시기", "조사서 쪽", "비고"]
     df = df[cols]
     df.to_pickle(a.out_prefix + ".pkl")
+    from openpyxl.styles import Alignment
+    from openpyxl.utils import get_column_letter
     with pd.ExcelWriter(a.out_prefix + ".xlsx", engine="openpyxl") as w:
         df.to_excel(w, index=False, sheet_name="기업정보")
         ws = w.sheets["기업정보"]
-        widths = {"번호": 6, "기업명": 22, "사업자번호": 14, "사업자번호 근거": 22, "사업자번호 후보": 50,
+        widths = {"번호": 6, "기업명": 22, "사업자번호": 14, "사업자번호 근거": 22,
                   "업종": 22, "지역": 6, "기업설명": 50,
                   "법인번호": 16, "KIPRIS 출원인코드": 15, "기술번호": 10, "수요기술명": 45,
                   "수요기술명(조사서)": 45, "수요기술 분야(6T)": 10, "국가과학기술표준분류(대)": 16,
@@ -515,10 +528,19 @@ def main():
                   "수요기술 상세내용": 70, "예상 적용 제품 및 서비스": 30, "수요유형": 12,
                   "기술도입 목적": 14, "기술거래 희망 유형": 16, "도입희망금액": 22, "도입희망시기": 12,
                   "조사서 쪽": 8, "비고": 40}
-        from openpyxl.utils import get_column_letter
         for j, c in enumerate(df.columns, 1):
             ws.column_dimensions[get_column_letter(j)].width = widths.get(c, 14)
         ws.freeze_panes = "C2"
+
+        review.to_excel(w, index=False, sheet_name="사업자번호 검토")
+        ws = w.sheets["사업자번호 검토"]
+        for j, wd in enumerate([22, 16, 50, 14, 26, 90], 1):
+            ws.column_dimensions[get_column_letter(j)].width = wd
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.freeze_panes = "B2"
+    print(f"사업자번호 검토 시트: {len(review)}개 기업")
     print("저장:", a.out_prefix + ".xlsx", a.out_prefix + ".pkl")
 
 
